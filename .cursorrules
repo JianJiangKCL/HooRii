@@ -1,0 +1,225 @@
+# HooRii Smart Home AI Assistant - Cursor Rules
+
+## Project Structure
+
+This is a smart home AI assistant with a modular architecture. Follow these rules for consistent development:
+
+### Core Components (Keep Decoupled)
+
+1. **Task Planner** (`task_planner.py`)
+   - Central orchestration agent
+   - Coordinates between components using clean interfaces
+   - Should NOT contain device-specific logic or character personality
+   - Should NOT contain business logic from other components
+
+2. **Intent Analyzer** (`intent_analyzer.py`)
+   - Analyzes user input to determine intent
+   - Returns structured intent data
+   - Should be stateless and focused only on intent recognition
+
+3. **Device Controller** (`device_controller.py`)
+   - Converts high-level intents to specific device commands
+   - Validates parameters and handles device communication
+   - Executes device operations
+   - Should NOT generate conversational responses
+
+4. **Character System** (`character_system.py`)
+   - Generates responses in 凌波丽's personality
+   - Takes context as input, returns character-appropriate responses
+   - Should be completely separate from business logic
+   - Should NOT directly interact with devices or databases
+
+5. **Database Service** (`database_service.py`)
+   - Handles all data persistence
+   - User management, device states, conversation history
+   - Should be a pure data layer with no business logic
+
+### Directory Structure Rules
+
+```
+/
+├── main.py              # Legacy main (to be refactored)
+├── task_planner.py      # Task Planner (main orchestrator)
+├── intent_analyzer.py   # Intent analysis component
+├── device_controller.py # Device control component
+├── character_system.py  # Character response generation
+├── api.py               # REST API endpoints
+├── config.py            # Configuration management
+├── models.py            # Database models + ConversationContext
+├── database_service.py  # Data access layer
+├── device_simulator.py  # Device state simulation
+├── user_device_management.py  # User device management utilities
+├── setup_env.py         # Environment setup
+├── run_app.py           # Main application runner
+├── start_api_server.py  # API server starter
+├── prompts/             # All prompt files
+│   ├── character.txt    # Character personality definition
+│   ├── task_planner.txt # Task planner system prompt
+│   └── device_controller.txt # Device controller prompt
+└── debug/               # ALL testing and debugging files
+    ├── __init__.py
+    ├── README.md
+    ├── device_controller_test.py
+    ├── intent_analysis_test.py
+    ├── character_test.py
+    ├── api_test.py
+    └── integration_test.py
+```
+
+### Testing Rules
+
+1. **ALL test files MUST go in `/debug/` directory**
+   - No test files in root directory
+   - Use descriptive names: `component_test.py`
+   - Include `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` to import from parent
+
+2. **Test file template:**
+   ```python
+   #!/usr/bin/env python3
+   """
+   Component Name Test
+   Tests specific functionality of [component]
+   """
+   import sys
+   import os
+   
+   # Add parent directory to path
+   sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+   
+   # Disable OpenTelemetry for tests
+   os.environ['OTEL_TRACES_EXPORTER'] = 'none'
+   os.environ['OTEL_METRICS_EXPORTER'] = 'none'
+   os.environ['OTEL_LOGS_EXPORTER'] = 'none'
+   
+   # Your test code here
+   ```
+
+### Component Decoupling Rules
+
+1. **Task Planner** (`task_planner.py`) should only:
+   - Orchestrate component interactions
+   - Manage conversation flow
+   - NOT analyze intent directly (use IntentAnalyzer)
+   - NOT control devices directly (use DeviceController)
+   - NOT generate responses directly (use CharacterSystem)
+
+2. **Intent Analyzer** (`intent_analyzer.py`) should only:
+   - Analyze user input for intent
+   - Return structured intent data
+   - Handle fallback keyword matching
+   - NOT execute device commands
+   - NOT generate responses
+
+3. **Device Controller** (`device_controller.py`) should only:
+   - Convert intents to device commands
+   - Validate device parameters
+   - Execute device operations
+   - Query device status
+   - NOT generate conversational responses
+   - NOT analyze user intent
+
+4. **Character System** (`character_system.py`) should only:
+   - Generate personality-consistent responses (凌波丽)
+   - Take context as input
+   - NOT contain business logic
+   - NOT directly interact with devices or databases
+   - NOT analyze user intent
+
+5. **Database Service** (`database_service.py`) should only:
+   - Handle data persistence
+   - Provide data access methods
+   - NOT contain business logic
+   - NOT make decisions about data
+
+### Code Style Rules
+
+1. **Imports:**
+   - Standard library first
+   - Third-party packages second
+   - Local imports last
+   - Use absolute imports when possible
+
+2. **Functions:**
+   - Single responsibility principle
+   - Clear docstrings with type hints
+   - Return consistent data types
+
+3. **Error Handling:**
+   - Use specific exception types
+   - Log errors with context
+   - Provide meaningful error messages
+   - Graceful degradation where possible
+
+4. **Configuration:**
+   - All config in `config.py` or `.env`
+   - No hardcoded values in business logic
+   - Environment-specific settings
+
+### API Design Rules
+
+1. **REST Endpoints:**
+   - Use standard HTTP methods
+   - Consistent response formats
+   - Proper error codes
+   - Clear endpoint naming
+
+2. **Data Models:**
+   - Use Pydantic for validation
+   - Clear field types and constraints
+   - Consistent naming conventions
+
+### Database Rules
+
+1. **Models:**
+   - One model per table
+   - Clear relationships
+   - Proper indexing
+   - Migration support
+
+2. **Queries:**
+   - Use SQLAlchemy ORM
+   - Proper session management
+   - No raw SQL unless necessary
+
+### Debugging Rules
+
+1. **Logging:**
+   - Use structured logging
+   - Appropriate log levels
+   - No sensitive data in logs
+
+2. **Development Tools:**
+   - Use `device_simulator.py` for device testing
+   - Langfuse for observability
+   - Clear debug output
+
+### File Naming Conventions
+
+- Core files: `snake_case.py`
+- Test files: `component_test.py` (in `/debug/`)
+- Config files: `snake_case.py` or `.env`
+- Prompt files: `snake_case.txt` (in `/prompts/`)
+
+### Do NOT:
+
+- Create test files in root directory
+- Mix business logic with presentation logic
+- Hardcode configuration values
+- Create circular dependencies between components
+- Put character personality in task planner
+- Put device logic in character system
+- Create temporary files outside `/debug/`
+
+### Architecture Flow:
+
+```
+User Input → Task Planner → Intent Analysis
+                ↓
+         Device Controller (if needed)
+                ↓
+         Execute Device Command
+                ↓
+         Character System → Response
+```
+
+Each component should be testable in isolation and have clear interfaces.

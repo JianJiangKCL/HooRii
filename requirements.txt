@@ -1,0 +1,65 @@
+# Smart Home AI Assistant Dependencies
+
+# Core AI/LLM Libraries
+anthropic>=0.25.0
+langfuse>=2.0.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
+alembic>=1.13.0  # Database migrations
+
+# Web Framework (for API)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# Async/Concurrency
+asyncio-mqtt>=0.16.0  # For IoT device communication
+aiofiles>=23.2.1
+
+# Vector Search (for future memory enhancement)
+sentence-transformers>=2.2.2  # For semantic search
+faiss-cpu>=1.7.4  # Vector similarity search
+numpy>=1.24.0
+
+# Utilities
+python-dotenv>=1.0.0  # Environment variable management
+pydantic-settings>=2.0.0
+python-multipart>=0.0.6  # For file uploads in API
+
+# Logging and Monitoring
+structlog>=23.1.0
+prometheus-client>=0.18.0
+
+# Security
+passlib[bcrypt]>=1.7.4  # For password hashing
+python-jose[cryptography]>=3.3.0  # JWT tokens
+python-multipart>=0.0.6
+
+# Development Tools
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# HTTP Client
+httpx>=0.25.0  # For external API calls
+requests>=2.31.0
+
+# Time/Date utilities
+python-dateutil>=2.8.2
+
+# Configuration
+pyyaml>=6.0.1  # For YAML config files
+toml>=0.10.2  # For TOML config files
+
+# Optional: Home Assistant integration
+pyhomeassistant>=0.1.0
+
+# Optional: MQTT for IoT device communication
+paho-mqtt>=1.6.1
+
+# Optional: Redis for caching
+redis>=5.0.0
