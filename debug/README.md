@@ -1,64 +1,32 @@
-# Debug and Testing Directory
+# Debug Folder
 
-This directory contains all testing and debugging utilities for the HooRii Smart Home AI Assistant.
+This folder contains all test files for the Home AI system.
 
-## Test Files
+## Usage
 
-### Component Tests (Test individual components in isolation)
+All test files should be created in this folder following the naming convention:
+- `test_[component_name].py` for component tests
+- `test_integration_[feature].py` for integration tests
+- `test_system_[scenario].py` for system tests
 
-- `intent_analysis_test.py` - Tests the intent analysis component
-- `character_test.py` - Tests the character (凌波丽) response generation
-- `device_controller_test.py` - Tests device controller logic
+## Running Tests
 
-### Integration Tests
-
-- `integration_test.py` - Tests the full system flow
-
-### Usage
-
-Run individual component tests:
+Run individual test:
 ```bash
-cd /path/to/hoorii
-python debug/intent_analysis_test.py
-python debug/character_test.py
-python debug/device_controller_test.py
+python debug/test_component.py
 ```
 
-Run integration test:
+Run all tests:
 ```bash
-python debug/integration_test.py
+cd debug && for f in test_*.py; do echo "=== Running $f ===" && python "$f" && echo; done
 ```
 
-### Test Structure
+## Test Categories
 
-All test files follow this pattern:
-1. Add parent directory to Python path
-2. Disable OpenTelemetry for clean output
-3. Import required components
-4. Run focused tests with clear output
-5. Validate expected behavior
+1. **Component Tests**: Test individual components (intent_analyzer, device_controller, character_system)
+2. **Integration Tests**: Test component interactions
+3. **System Tests**: Test complete conversation flows
+4. **Connection Tests**: Test external service connections (Langfuse, database)
+5. **Session Tests**: Test session management and persistence
 
-### Adding New Tests
-
-When creating new test files:
-1. Use the naming convention: `component_test.py`
-2. Include the standard header (see existing files)
-3. Focus on testing one component or flow
-4. Provide clear test descriptions and expected outcomes
-5. Handle errors gracefully with meaningful messages
-
-### Component Architecture
-
-Tests are designed to validate the decoupled architecture:
-
-```
-User Input → Task Planner → Intent Analysis
-                ↓
-         Device Controller (if needed)
-                ↓
-         Execute Device Command
-                ↓
-         Character System → Response
-```
-
-Each component should be testable in isolation.
+Refer to `../CLAUDE.md` for detailed development rules and test templates.
