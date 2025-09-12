@@ -78,6 +78,22 @@ class DatabaseService:
         finally:
             session.close()
     
+    def get_user_metadata(self, user_id: str) -> dict:
+        """Get user metadata safely for external use"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(id=user_id).first()
+            if user:
+                return {
+                    "interaction_count": user.interaction_count or 0,
+                    "familiarity_score": user.familiarity_score,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "last_seen": user.last_seen.isoformat() if user.last_seen else None
+                }
+            return {}
+        finally:
+            session.close()
+    
     # Conversation Management
     def get_or_create_conversation(
         self, 

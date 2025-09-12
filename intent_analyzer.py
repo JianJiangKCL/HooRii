@@ -62,9 +62,7 @@ class IntentAnalyzer:
         conversation_context = context.get_conversation_context_for_llm(max_turns=5)
         device_context = context.get_device_context_for_llm()
         
-        # Check for reference words that need resolution
-        reference_words = ["它", "那个", "这个", "刚才的", "之前的"]
-        has_reference = any(ref in user_input for ref in reference_words)
+        # Let LLM detect and handle reference words contextually
         
         analysis_prompt = f"""
         作为智能家居系统的意图分析器，请分析用户输入并理解其真实意图。
@@ -122,12 +120,17 @@ class IntentAnalyzer:
         """
         
         try:
+            # Use prompt caching for system prompt to save tokens
             response = await asyncio.to_thread(
                 self.claude_client.messages.create,
                 model=self.config.anthropic.model,
                 max_tokens=800,
                 temperature=0.3,  # Lower temperature for more consistent analysis
-                system=self.system_prompt,
+                system=[{
+                    "type": "text",
+                    "text": self.system_prompt,
+                    "cache_control": {"type": "ephemeral"}  # Cache the system prompt
+                }],
                 messages=[{"role": "user", "content": analysis_prompt}]
             )
             
@@ -155,36 +158,70 @@ class IntentAnalyzer:
             context.add_intent(intent_json)
             
             # Logging intent analysis results (Langfuse will capture this via @observe decorator)
-            self.logger.info(f"Intent analysis - Confidence: {intent_json.get('confidence', 0.0)}, Hardware: {intent_json.get('involves_hardware', False)}")
+            self.logger.debug(f"Intent analysis - Confidence: {intent_json.get('confidence', 0.0)}, Hardware: {intent_json.get('involves_hardware', False)}")
             
-            self.logger.info(f"Intent analysis result: {json.dumps(intent_json, ensure_ascii=False)}")
+            self.logger.debug(f"Intent analysis result: {json.dumps(intent_json, ensure_ascii=False)}")
             return intent_json
             
         except Exception as e:
             self.logger.error(f"Intent analysis error: {e}")
             
-            # Use enhanced fallback for API errors
-            if "529" in str(e) or "overloaded" in str(e).lower():
-                return await self._enhanced_fallback_analysis(user_input, context)
+            # Try simpler LLM approach first for API errors
+            if "529" in str(e) or "overloaded" in str(e).lower() or "rate_limit" in str(e).lower():
+                try:
+                    # Attempt with minimal context and lower token limit
+                    simplified_prompt = f"""
+                    分析用户输入的意图: "{user_input}"
+                    
+                    返回JSON格式:
+                    {{
+                        "involves_hardware": boolean,
+                        "device": "设备类型或null",
+                        "action": "操作或null", 
+                        "confidence": 0.0-1.0,
+                        "reasoning": "简要分析"
+                    }}
+                    """
+                    
+                    response = await asyncio.to_thread(
+                        self.claude_client.messages.create,
+                        model="claude-3-haiku-20240307",  # Use faster, cheaper model
+                        max_tokens=200,
+                        temperature=0.1,
+                        system=[{
+                            "type": "text",
+                            "text": "你是意图分析助手，分析用户输入并返回JSON。",
+                            "cache_control": {"type": "ephemeral"}
+                        }],
+                        messages=[{"role": "user", "content": simplified_prompt}]
+                    )
+                    
+                    response_text = response.content[0].text.strip()
+                    if response_text.startswith('{') and response_text.endswith('}'):
+                        simple_result = json.loads(response_text)
+                        # Expand to full format
+                        return {
+                            "involves_hardware": simple_result.get("involves_hardware", False),
+                            "device": simple_result.get("device"),
+                            "action": simple_result.get("action"),
+                            "parameters": {},
+                            "context_dependent": False,
+                            "reference_resolution": {
+                                "has_reference": False,
+                                "resolved_device": None,
+                                "reference_word": None
+                            },
+                            "requires_status_query": False,
+                            "requires_memory": False,
+                            "memory_query": None,
+                            "confidence": simple_result.get("confidence", 0.3),
+                            "reasoning": f"Simplified analysis: {simple_result.get('reasoning', 'Basic LLM analysis')}"
+                        }
+                except Exception as fallback_e:
+                    self.logger.error(f"Simplified LLM fallback also failed: {fallback_e}")
             
-            # Default fallback
-            return {
-                "involves_hardware": False,
-                "device": None,
-                "action": None,
-                "parameters": {},
-                "context_dependent": False,
-                "reference_resolution": {
-                    "has_reference": False,
-                    "resolved_device": None,
-                    "reference_word": None
-                },
-                "requires_status_query": False,
-                "requires_memory": False,
-                "memory_query": None,
-                "confidence": 0.0,
-                "reasoning": "Analysis failed, using default response"
-            }
+            # Final fallback - minimal analysis
+            return await self._enhanced_fallback_analysis(user_input, context)
     
     def _resolve_device_reference(
         self,
@@ -208,73 +245,34 @@ class IntentAnalyzer:
         user_input: str,
         context: SystemContext
     ) -> Dict[str, Any]:
-        """Enhanced fallback with basic context awareness"""
-        user_input_lower = user_input.lower()
+        """Fallback when LLM API is unavailable - returns minimal analysis"""
+        self.logger.warning("LLM API unavailable, using minimal fallback analysis")
         
-        # Device mapping with variations
-        device_mapping = {
-            "lights": ["灯", "灯光", "照明", "电灯"],
-            "tv": ["电视", "tv", "电视机"],
-            "air_conditioner": ["空调", "冷气", "暖气"],
-            "speaker": ["音响", "音箱", "扬声器", "喇叭"],
-            "curtains": ["窗帘", "窗户", "遮光帘"]
-        }
-        
-        # Action mapping
-        action_mapping = {
-            "turn_on": ["开", "打开", "启动", "开启"],
-            "turn_off": ["关", "关闭", "停止", "关掉"],
-            "set_brightness": ["调亮", "调暗", "亮度", "变亮", "变暗"],
-            "set_temperature": ["调温", "温度", "热", "冷", "凉"],
-            "set_volume": ["音量", "声音", "大声", "小声"]
-        }
-        
-        # Reference words
-        reference_words = ["它", "那个", "这个", "刚才的"]
-        
-        # Detect device
-        detected_device = None
-        for device_id, keywords in device_mapping.items():
-            if any(kw in user_input_lower for kw in keywords):
-                detected_device = device_id
-                break
-        
-        # Detect action
-        detected_action = None
-        for action_id, keywords in action_mapping.items():
-            if any(kw in user_input_lower for kw in keywords):
-                detected_action = action_id
-                break
-        
-        # Check for references
+        # Check for basic reference words in context
+        reference_words = ["它", "那个", "这个", "刚才的", "之前的"]
         has_reference = any(ref in user_input for ref in reference_words)
         reference_word = next((ref for ref in reference_words if ref in user_input), None)
         
-        # If has reference but no device, try to resolve from context
-        if has_reference and not detected_device:
-            detected_device = context.resolve_reference(reference_word)
+        # Try to resolve reference from context if available
+        resolved_device = None
+        if has_reference and reference_word:
+            resolved_device = context.resolve_reference(reference_word)
         
-        # Determine if it's a status query
-        status_keywords = ["状态", "开着", "关着", "是否", "有没有", "怎么样"]
-        is_status_query = any(kw in user_input_lower for kw in status_keywords)
-        
-        # Build result
-        involves_hardware = bool(detected_device and (detected_action or is_status_query))
-        
+        # Return conservative analysis - let other components handle the complexity
         return {
-            "involves_hardware": involves_hardware,
-            "device": detected_device,
-            "action": detected_action,
+            "involves_hardware": False,  # Conservative - assume no hardware control without LLM
+            "device": resolved_device,   # Only if resolved from context
+            "action": None,
             "parameters": {},
             "context_dependent": has_reference,
             "reference_resolution": {
                 "has_reference": has_reference,
-                "resolved_device": detected_device if has_reference else None,
+                "resolved_device": resolved_device,
                 "reference_word": reference_word
             },
-            "requires_status_query": is_status_query,
+            "requires_status_query": False,
             "requires_memory": False,
             "memory_query": None,
-            "confidence": 0.5,
-            "reasoning": "Fallback analysis based on keyword detection"
+            "confidence": 0.1,  # Very low confidence without LLM analysis
+            "reasoning": "LLM unavailable - minimal fallback analysis, recommend retry"
         }

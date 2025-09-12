@@ -48,6 +48,7 @@ class User(Base):
     # AI Assistant specific fields
     familiarity_score = Column(Integer, default=25, nullable=False)  # 0-100
     preferred_tone = Column(String(20), default='polite')  # formal, polite, casual, intimate
+    interaction_count = Column(Integer, default=0, nullable=False)  # Track total interactions
     
     # User preferences
     preferences = Column(JSON, default=dict)  # Flexible preference storage

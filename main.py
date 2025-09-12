@@ -126,7 +126,7 @@ class HomeAISystem:
                 metadata=trace_metadata
             )
             
-            self.logger.info(f"Langfuse session setup: session_id={session_id}, user_id={user_id}")
+            self.logger.debug(f"Langfuse session setup: session_id={session_id}, user_id={user_id}")
                 
         except Exception as e:
             self.logger.warning(f"Failed to setup Langfuse session: {e}")
@@ -187,12 +187,13 @@ class HomeAISystem:
             # Update Langfuse with user metadata
             if self.langfuse_enabled and self.langfuse:
                 try:
-                    user = self.db_service.get_or_create_user(user_id)
+                    # Get user data safely within proper session context
+                    user_data = self.db_service.get_user_metadata(user_id)
                     self.langfuse.update_current_trace(
                         metadata={
-                            "user_interaction_count": user.interaction_count if user else 0,
+                            "user_interaction_count": user_data.get("interaction_count", 0),
                             "user_familiarity": context.familiarity_score,
-                            "user_created_at": user.created_at.isoformat() if user and user.created_at else None
+                            "user_created_at": user_data.get("created_at")
                         }
                     )
                 except Exception as e:
@@ -210,7 +211,7 @@ class HomeAISystem:
         
         try:
             # Step 1: Analyze intent with context
-            self.logger.info(f"Analyzing intent for: {user_input}")
+            self.logger.debug(f"Analyzing intent for: {user_input}")
             intent = await self.intent_analyzer.analyze_intent(
                 user_input=user_input,
                 context=context
@@ -271,13 +272,37 @@ class HomeAISystem:
                 response_data = {"memories_retrieved": len(memories)}
             
             # Step 3: Generate character response with full context
-            self.logger.info("Generating character response")
+            self.logger.debug("Generating character response")
             final_response = await self.character_system.generate_response(
                 context=context,
                 response_data=response_data
             )
             
-            # Step 4: Save conversation to database
+            # Steps 4-6: Database and session operations (async, non-blocking for user response)
+            # Start these tasks in background after user gets response
+            asyncio.create_task(self._handle_post_response_operations(
+                user_id, session_id, user_input, final_response, intent, context, response_data
+            ))
+            
+            return final_response
+            
+        except Exception as e:
+            self.logger.error(f"Error processing user input: {e}")
+            
+            # Generate error response through character system
+            error_response = await self.character_system.generate_response(
+                context=context,
+                response_data={"error": str(e)}
+            )
+            
+            return error_response
+    
+    async def _handle_post_response_operations(
+        self, user_id: str, session_id: str, user_input: str, 
+        final_response: str, intent: dict, context, response_data: dict
+    ):
+        """Handle database and session operations in background after user gets response"""
+        try:
             if user_id:
                 # Get or create conversation
                 try:
@@ -303,10 +328,9 @@ class HomeAISystem:
                             conversation_id=session_id
                         )
                 
-                # Save message - use the conversation ID string instead of object
-                conversation_id = db_conversation.id if hasattr(db_conversation, 'id') else db_conversation
+                # Save message - use session_id directly to avoid SQLAlchemy session issues
                 self.db_service.save_message(
-                    conversation_id=conversation_id,
+                    conversation_id=session_id,
                     user_input=user_input,
                     assistant_response=final_response,
                     intent_detected=intent,
@@ -316,13 +340,10 @@ class HomeAISystem:
                 # Update user interaction count for familiarity
                 try:
                     self.db_service.increment_user_interaction(user_id)
-                except AttributeError:
-                    # Method might not exist, create a simple alternative
-                    user = self.db_service.get_or_create_user(user_id)
-                    if user:
-                        user.interaction_count = (user.interaction_count or 0) + 1
+                except Exception as e:
+                    self.logger.warning(f"Failed to increment user interaction count: {e}")
             
-            # Step 5: Track interaction in session
+            # Track interaction in session
             self.session_manager.track_interaction(
                 session_id=session_id,
                 user_input=user_input,
@@ -334,21 +355,12 @@ class HomeAISystem:
                 }
             )
             
-            # Step 6: Save context for persistence
-            self.context_manager.save_context(f"contexts/{session_id}.json")
-            
-            return final_response
-            
-        except Exception as e:
-            self.logger.error(f"Error processing user input: {e}")
-            
-            # Generate error response through character system
-            error_response = await self.character_system.generate_response(
-                context=context,
-                response_data={"error": str(e)}
-            )
-            
-            return error_response
+            # Save context for persistence (async, non-blocking)
+            await self.context_manager.save_context_async(f"contexts/{session_id}.json")
+                
+        except Exception as save_error:
+            # Log database/session errors but don't let them affect the user response
+            self.logger.warning(f"Non-critical backend operations failed: {save_error}")
     
     async def cleanup(self):
         """Cleanup resources"""
@@ -380,10 +392,28 @@ class HomeAISystem:
 
 async def main():
     """Main entry point for testing"""
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Home AI Assistant')
+    parser.add_argument('--debug', action='store_true', 
+                       help='Enable debug logging (shows detailed info, debug, and error messages)')
+    args = parser.parse_args()
+    
+    # Configure logging level based on debug flag
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        print("🐛 Debug mode enabled - showing detailed logs")
+    else:
+        logging.getLogger().setLevel(logging.WARNING)  # Only show warnings and errors
+    
     system = HomeAISystem()
     
     print("\n🤖 Home AI Assistant Ready!")
-    print("Type 'exit' to quit, 'reset' to start a new session\n")
+    print("Type 'exit' to quit, 'reset' to start a new session")
+    if args.debug:
+        print("🔍 Debug mode: ON")
+    print()
     
     session_id = str(uuid.uuid4())
     user_id = "test_user"

@@ -74,12 +74,17 @@ class CharacterSystem:
         character_prompt = self._build_character_prompt(context, response_data)
         
         try:
+            # Use prompt caching for the character system prompt to save tokens
             response = await asyncio.to_thread(
                 self.claude_client.messages.create,
                 model=self.config.anthropic.model,
                 max_tokens=self.config.anthropic.max_tokens,
                 temperature=0.7,  # Slightly higher for more natural responses
-                system=character_prompt["system"],
+                system=[{
+                    "type": "text",
+                    "text": character_prompt["system"],
+                    "cache_control": {"type": "ephemeral"}  # Cache the character system prompt
+                }],
                 messages=[{"role": "user", "content": character_prompt["user_content"]}]
             )
             
@@ -93,9 +98,9 @@ class CharacterSystem:
             
             # Log character response metadata (captured by @observe decorator)  
             response_type = self._determine_response_type(context, response_data)
-            self.logger.info(f"Character response - Type: {response_type}, Familiarity: {context.familiarity_score}, Tone: {context.conversation_tone}")
+            self.logger.debug(f"Character response - Type: {response_type}, Familiarity: {context.familiarity_score}, Tone: {context.conversation_tone}")
             
-            self.logger.info(f"Character response generated: {character_response[:100]}...")
+            self.logger.debug(f"Character response generated: {character_response[:100]}...")
             return character_response
             
         except Exception as e:
@@ -142,6 +147,8 @@ class CharacterSystem:
 3. 考虑对话历史保持连贯性
 4. 简洁但不失温度
 5. 在适当时候使用"......"表示停顿
+6. 只返回纯对话内容，不包含心理活动、动作描述或括号内容
+7. 避免使用（）描述动作或表情
 """
         
         user_content = f"""

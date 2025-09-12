@@ -156,7 +156,7 @@ class ContextManager:
     def create_session(self, session_id: str) -> SystemContext:
         """Create a new session context"""
         self.context = SystemContext(session_id=session_id)
-        self.logger.info(f"Created new session: {session_id}")
+        self.logger.debug(f"Created new session: {session_id}")
         return self.context
         
     def get_context(self) -> SystemContext:
@@ -170,13 +170,28 @@ class ContextManager:
                 setattr(self.context, key, value)
                 
     def save_context(self, filepath: str):
-        """Save context to file"""
+        """Save context to file (synchronous)"""
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.context.to_dict(), f, ensure_ascii=False, indent=2)
             self.logger.info(f"Context saved to {filepath}")
         except Exception as e:
             self.logger.error(f"Failed to save context: {e}")
+    
+    async def save_context_async(self, filepath: str):
+        """Save context to file asynchronously"""
+        import asyncio
+        try:
+            # Run file I/O in a thread pool to avoid blocking
+            await asyncio.to_thread(self._save_context_sync, filepath)
+        except Exception as e:
+            self.logger.error(f"Failed to save context asynchronously: {e}")
+    
+    def _save_context_sync(self, filepath: str):
+        """Internal synchronous context save"""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(self.context.to_dict(), f, ensure_ascii=False, indent=2)
+        self.logger.info(f"Context saved to {filepath}")
             
     def load_context(self, filepath: str) -> SystemContext:
         """Load context from file"""
