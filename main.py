@@ -21,7 +21,7 @@ import anthropic
 
 # Try to import Langfuse components
 try:
-    from langfuse import Langfuse, observe
+    from langfuse import Langfuse, observe, get_client
     LANGFUSE_AVAILABLE = True
     print("✅ Langfuse available")
 except ImportError:
@@ -32,6 +32,7 @@ except ImportError:
             return func
         return decorator
     Langfuse = None
+    get_client = None
 
 from config import Config, load_config
 from database_service import DatabaseService
@@ -39,6 +40,7 @@ from context_manager import ContextManager, SystemContext
 from intent_analyzer import IntentAnalyzer
 from device_controller import DeviceController
 from character_system import CharacterSystem
+from langfuse_session_manager import LangfuseSessionManager
 
 
 class HomeAISystem:
@@ -64,8 +66,13 @@ class HomeAISystem:
         self.device_controller = DeviceController(self.config)
         self.character_system = CharacterSystem(self.config)
         
+        # Initialize session manager
+        self.session_manager = LangfuseSessionManager(self.config)
+        
         # Initialize Langfuse for observability
         self.langfuse_enabled = self.config.langfuse.enabled and LANGFUSE_AVAILABLE
+        self.current_trace = None  # Track current session trace
+        
         if self.langfuse_enabled:
             try:
                 os.environ['LANGFUSE_SECRET_KEY'] = self.config.langfuse.secret_key
@@ -87,6 +94,43 @@ class HomeAISystem:
         print("🏠 Home AI System initialized with context awareness")
         self.config.print_config()
     
+    def _setup_langfuse_session(self, session_id: str, user_id: str = None):
+        """Setup Langfuse session and user tracking"""
+        if not self.langfuse_enabled or not self.langfuse:
+            return
+            
+        try:
+            # Create a new trace for this session
+            trace_metadata = {
+                "session_id": session_id,
+                "system": "home_ai_assistant",
+                "tags": ["conversation", "session"]
+            }
+            
+            if user_id:
+                trace_metadata["user_id"] = user_id
+                
+            # Create a session span for tracking
+            self.current_trace = self.langfuse.start_as_current_span(
+                name="conversation_session",
+                metadata={
+                    **trace_metadata,
+                    "user_id": user_id
+                }
+            )
+            
+            # Update trace with session ID using the new API
+            self.langfuse.update_current_trace(
+                session_id=session_id,
+                user_id=user_id,
+                metadata=trace_metadata
+            )
+            
+            self.logger.info(f"Langfuse session setup: session_id={session_id}, user_id={user_id}")
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to setup Langfuse session: {e}")
+    
     @observe(as_type="generation", name="process_user_input")
     async def process_user_input(
         self,
@@ -104,6 +148,34 @@ class HomeAISystem:
         if not context.session_id:
             context = self.context_manager.create_session(session_id)
         
+        # Setup Langfuse session and user tracking
+        self._setup_langfuse_session(session_id, user_id)
+        
+        # Start session if this is a new session
+        if context.message_count == 0:
+            self.session_manager.start_session(
+                session_id=session_id,
+                user_id=user_id,
+                metadata={
+                    "familiarity_score": context.familiarity_score,
+                    "conversation_tone": context.conversation_tone
+                }
+            )
+        
+        # Add session metadata for Langfuse
+        if self.langfuse_enabled and self.langfuse:
+            try:
+                # Update current trace with interaction metadata
+                self.langfuse.update_current_trace(
+                    metadata={
+                        "message_count": context.message_count + 1,
+                        "conversation_tone": context.conversation_tone,
+                        "familiarity_score": context.familiarity_score
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to update trace metadata: {e}")
+        
         # Update context with user input
         context.user_input = user_input
         context.timestamp = datetime.now()
@@ -111,6 +183,20 @@ class HomeAISystem:
         # Get user familiarity from database
         if user_id:
             context.familiarity_score = self.db_service.get_user_familiarity(user_id)
+            
+            # Update Langfuse with user metadata
+            if self.langfuse_enabled and self.langfuse:
+                try:
+                    user = self.db_service.get_or_create_user(user_id)
+                    self.langfuse.update_current_trace(
+                        metadata={
+                            "user_interaction_count": user.interaction_count if user else 0,
+                            "user_familiarity": context.familiarity_score,
+                            "user_created_at": user.created_at.isoformat() if user and user.created_at else None
+                        }
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to update Langfuse with user metadata: {e}")
         else:
             context.familiarity_score = 50  # Default familiarity
         
@@ -194,14 +280,33 @@ class HomeAISystem:
             # Step 4: Save conversation to database
             if user_id:
                 # Get or create conversation
-                db_conversation = self.db_service.get_or_create_conversation(
-                    user_id=user_id,
-                    conversation_id=session_id
-                )
+                try:
+                    db_conversation = self.db_service.get_or_create_conversation(
+                        user_id=user_id,
+                        conversation_id=session_id
+                    )
+                except Exception as db_error:
+                    self.logger.warning(f"Database conversation error: {db_error}")
+                    # Try to get existing conversation by ID
+                    session = self.db_service.get_session()
+                    try:
+                        from models import Conversation
+                        db_conversation = session.query(Conversation).filter_by(id=session_id).first()
+                    finally:
+                        session.close()
+                    if not db_conversation:
+                        # Create with unique ID
+                        import uuid
+                        session_id = f"{session_id}_{str(uuid.uuid4())[:8]}"
+                        db_conversation = self.db_service.get_or_create_conversation(
+                            user_id=user_id,
+                            conversation_id=session_id
+                        )
                 
-                # Save message
+                # Save message - use the conversation ID string instead of object
+                conversation_id = db_conversation.id if hasattr(db_conversation, 'id') else db_conversation
                 self.db_service.save_message(
-                    conversation_id=db_conversation.id,
+                    conversation_id=conversation_id,
                     user_input=user_input,
                     assistant_response=final_response,
                     intent_detected=intent,
@@ -209,9 +314,27 @@ class HomeAISystem:
                 )
                 
                 # Update user interaction count for familiarity
-                self.db_service.increment_user_interaction(user_id)
+                try:
+                    self.db_service.increment_user_interaction(user_id)
+                except AttributeError:
+                    # Method might not exist, create a simple alternative
+                    user = self.db_service.get_or_create_user(user_id)
+                    if user:
+                        user.interaction_count = (user.interaction_count or 0) + 1
             
-            # Step 5: Save context for persistence
+            # Step 5: Track interaction in session
+            self.session_manager.track_interaction(
+                session_id=session_id,
+                user_input=user_input,
+                assistant_response=final_response,
+                metadata={
+                    "intent_type": "hardware" if intent.get("involves_hardware") else "conversation",
+                    "device_involved": intent.get("device"),
+                    "success": response_data.get("success", True) if response_data else True
+                }
+            )
+            
+            # Step 6: Save context for persistence
             self.context_manager.save_context(f"contexts/{session_id}.json")
             
             return final_response
@@ -239,9 +362,17 @@ class HomeAISystem:
             # Cleanup database connections
             self.db_service.cleanup_expired_conversations()
             
-            # Flush Langfuse if enabled
-            if self.langfuse_enabled and self.langfuse:
-                self.langfuse.flush()
+            # End Langfuse session and flush
+            if self.session_manager and self.context_manager.context.session_id:
+                self.session_manager.end_session(
+                    session_id=self.context_manager.context.session_id,
+                    final_metadata={
+                        "session_ended": True,
+                        "session_duration_minutes": (datetime.now() - self.context_manager.context.timestamp).total_seconds() / 60,
+                        "final_message_count": self.context_manager.context.message_count,
+                        "final_familiarity_score": self.context_manager.context.familiarity_score
+                    }
+                )
                 
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")

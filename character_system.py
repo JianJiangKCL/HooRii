@@ -10,7 +10,17 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 
 import anthropic
-from langfuse import observe
+
+# Try to import Langfuse components
+try:
+    from langfuse import observe
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 from config import Config
 from context_manager import SystemContext
@@ -80,6 +90,10 @@ class CharacterSystem:
                 user_msg=context.user_input,
                 assistant_msg=character_response
             )
+            
+            # Log character response metadata (captured by @observe decorator)  
+            response_type = self._determine_response_type(context, response_data)
+            self.logger.info(f"Character response - Type: {response_type}, Familiarity: {context.familiarity_score}, Tone: {context.conversation_tone}")
             
             self.logger.info(f"Character response generated: {character_response[:100]}...")
             return character_response

@@ -10,7 +10,17 @@ import re
 from typing import Dict, Any, Optional
 
 import anthropic
-from langfuse import observe
+
+# Try to import Langfuse components
+try:
+    from langfuse import observe
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 from config import Config
 from context_manager import SystemContext
@@ -27,6 +37,18 @@ class IntentAnalyzer:
             max_retries=3,
             timeout=30.0
         )
+        
+        # Load system prompt
+        self.system_prompt = self._load_prompt_file('prompts/intent_analyzer.txt')
+    
+    def _load_prompt_file(self, filepath: str) -> str:
+        """Load prompt from file"""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            self.logger.warning(f"Failed to load prompt file {filepath}: {e}")
+            return "你是一个智能意图分析系统，理解用户输入并返回JSON格式结果。"
     
     @observe(as_type="generation", name="intent_analysis")
     async def analyze_intent(
@@ -105,7 +127,7 @@ class IntentAnalyzer:
                 model=self.config.anthropic.model,
                 max_tokens=800,
                 temperature=0.3,  # Lower temperature for more consistent analysis
-                system="你是一个专业的智能家居意图分析系统。深入理解用户意图，考虑对话上下文和隐含含义。只返回有效的JSON格式。",
+                system=self.system_prompt,
                 messages=[{"role": "user", "content": analysis_prompt}]
             )
             
@@ -131,6 +153,9 @@ class IntentAnalyzer:
             
             # Store intent in context
             context.add_intent(intent_json)
+            
+            # Logging intent analysis results (Langfuse will capture this via @observe decorator)
+            self.logger.info(f"Intent analysis - Confidence: {intent_json.get('confidence', 0.0)}, Hardware: {intent_json.get('involves_hardware', False)}")
             
             self.logger.info(f"Intent analysis result: {json.dumps(intent_json, ensure_ascii=False)}")
             return intent_json

@@ -10,7 +10,17 @@ import re
 from typing import Dict, Any, Optional, List
 
 import anthropic
-from langfuse import observe
+
+# Try to import Langfuse components
+try:
+    from langfuse import observe
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 from config import Config
 from database_service import DatabaseService
@@ -29,6 +39,18 @@ class DeviceController:
             max_retries=3,
             timeout=30.0
         )
+        
+        # Load system prompt
+        self.system_prompt = self._load_prompt_file('prompts/device_controller.txt')
+    
+    def _load_prompt_file(self, filepath: str) -> str:
+        """Load prompt from file"""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            self.logger.warning(f"Failed to load prompt file {filepath}: {e}")
+            return "你是智能家居设备控制系统，处理设备操作请求。"
     
     @observe(as_type="generation", name="device_controller")
     async def process_device_intent(
@@ -55,10 +77,7 @@ class DeviceController:
                 model=self.config.anthropic.model,
                 max_tokens=1000,
                 temperature=0.3,
-                system="""你是一个智能家居设备控制系统。
-根据用户意图和上下文，理解并执行设备控制或查询。
-考虑对话历史和之前的设备状态来做出智能决策。
-只返回JSON格式的响应。""",
+                system=self.system_prompt,
                 messages=[{"role": "user", "content": device_prompt}]
             )
             
@@ -85,6 +104,9 @@ class DeviceController:
                     context=context
                 )
                 result["query_result"] = query_result
+            
+            # Log device control results (captured by @observe decorator)
+            self.logger.info(f"Device control - Action: {result.get('action_type')}, Device: {result.get('device_id')}, Success: {result.get('execution', {}).get('success', False)}")
             
             self.logger.info(f"Device controller result: {json.dumps(result, ensure_ascii=False)}")
             return result

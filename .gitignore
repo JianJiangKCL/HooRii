@@ -1,2 +1,7 @@
 .env
 setup_env.py
+
+*.pyc
+*.json
+*.jsonl
+*.db
