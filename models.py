@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, JSON, Boolean, ForeignKey, Float
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, JSON, Boolean, ForeignKey, Float, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -63,6 +63,7 @@ class User(Base):
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
     memories = relationship("UserMemory", back_populates="user", cascade="all, delete-orphan")
     device_interactions = relationship("DeviceInteraction", back_populates="user")
+    user_devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -209,7 +210,7 @@ class UserMemory(Base):
         }
 
 class Device(Base):
-    """Smart home devices registry"""
+    """Smart home devices registry - Global device definitions"""
     __tablename__ = 'devices'
     
     id = Column(String, primary_key=True)  # e.g., "living_room_lights"
@@ -221,17 +222,23 @@ class Device(Base):
     supported_actions = Column(JSON, default=list)  # turn_on, turn_off, set_volume, etc. (JSON array)
     capabilities = Column(JSON, default=dict)  # brightness, color, channels, etc.
     
-    # Current state
+    # Current state (global state)
     current_state = Column(JSON, default=dict)
     last_updated = Column(DateTime, default=datetime.utcnow)
     
     # Configuration
     is_active = Column(Boolean, default=True)
     requires_auth = Column(Boolean, default=False)
-    min_familiarity_required = Column(Integer, default=40)
+    default_min_familiarity = Column(Integer, default=40)  # Default familiarity requirement
+    
+    # Metadata
+    description = Column(Text, nullable=True)
+    manufacturer = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
     
     # Relationships
     interactions = relationship("DeviceInteraction", back_populates="device")
+    user_devices = relationship("UserDevice", back_populates="device", cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -245,7 +252,65 @@ class Device(Base):
             'last_updated': self.last_updated.isoformat() if self.last_updated else None,
             'is_active': self.is_active,
             'requires_auth': self.requires_auth,
-            'min_familiarity_required': self.min_familiarity_required
+            'default_min_familiarity': self.default_min_familiarity,
+            'description': self.description,
+            'manufacturer': self.manufacturer,
+            'model': self.model
+        }
+
+class UserDevice(Base):
+    """User-specific device configurations and access permissions"""
+    __tablename__ = 'user_devices'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey('users.id'), nullable=False)
+    device_id = Column(String, ForeignKey('devices.id'), nullable=False)
+    
+    # User-specific device settings
+    custom_name = Column(String(255), nullable=True)  # User's custom name for the device
+    is_favorite = Column(Boolean, default=False)
+    is_accessible = Column(Boolean, default=True)  # Whether user can access this device
+    
+    # Access control
+    min_familiarity_required = Column(Integer, nullable=True)  # Override global setting
+    custom_permissions = Column(JSON, default=dict)  # Custom permissions for this user
+    allowed_actions = Column(JSON, default=list)  # Subset of device's supported_actions
+    
+    # User-specific preferences
+    user_preferences = Column(JSON, default=dict)  # User's preferred settings for this device
+    quick_actions = Column(JSON, default=list)  # User's favorite quick actions
+    
+    # Metadata
+    added_at = Column(DateTime, default=datetime.utcnow)
+    last_used = Column(DateTime, nullable=True)
+    usage_count = Column(Integer, default=0)
+    
+    # Relationships
+    user = relationship("User", back_populates="user_devices")
+    device = relationship("Device", back_populates="user_devices")
+    
+    # Unique constraint to prevent duplicate user-device pairs
+    __table_args__ = (
+        Index('idx_user_device', 'user_id', 'device_id', unique=True),
+    )
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'device_id': self.device_id,
+            'custom_name': self.custom_name,
+            'is_favorite': self.is_favorite,
+            'is_accessible': self.is_accessible,
+            'min_familiarity_required': self.min_familiarity_required,
+            'custom_permissions': self.custom_permissions,
+            'allowed_actions': self.allowed_actions,
+            'user_preferences': self.user_preferences,
+            'quick_actions': self.quick_actions,
+            'added_at': self.added_at.isoformat() if self.added_at else None,
+            'last_used': self.last_used.isoformat() if self.last_used else None,
+            'usage_count': self.usage_count,
+            'device': self.device.to_dict() if self.device else None
         }
 
 class DeviceInteraction(Base):

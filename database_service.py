@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, desc, String
 
 from models import (
-    User, Conversation, Message, UserMemory, Device, 
+    User, Conversation, Message, UserMemory, Device, UserDevice,
     DeviceInteraction, SystemSettings, DatabaseManager
 )
 from config import Config
@@ -593,3 +593,402 @@ class DatabaseService:
                 session.commit()
         finally:
             session.close()
+
+    # Enhanced User Management
+    def update_user(self, user_id: str, **updates) -> bool:
+        """Update user information"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(id=user_id).first()
+            if not user:
+                return False
+            
+            # Update allowed fields
+            allowed_fields = ['username', 'email', 'familiarity_score', 'preferred_tone', 'preferences', 'is_active']
+            for field, value in updates.items():
+                if field in allowed_fields and value is not None:
+                    setattr(user, field, value)
+            
+            user.updated_at = datetime.utcnow()
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error updating user {user_id}: {e}")
+            return False
+        finally:
+            session.close()
+
+    def delete_user(self, user_id: str, soft_delete: bool = True) -> bool:
+        """Delete user (soft delete by default)"""
+        session = self.get_session()
+        try:
+            user = session.query(User).filter_by(id=user_id).first()
+            if not user:
+                return False
+            
+            if soft_delete:
+                user.is_active = False
+                user.updated_at = datetime.utcnow()
+            else:
+                session.delete(user)
+            
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error deleting user {user_id}: {e}")
+            return False
+        finally:
+            session.close()
+
+    def get_all_users(self, active_only: bool = True, limit: int = 100, offset: int = 0) -> List[User]:
+        """Get all users with pagination"""
+        session = self.get_session()
+        try:
+            query = session.query(User)
+            if active_only:
+                query = query.filter_by(is_active=True)
+            return query.offset(offset).limit(limit).all()
+        finally:
+            session.close()
+
+    # Enhanced Device Management
+    def create_device(self, device_data: Dict) -> Optional[Device]:
+        """Create a new device"""
+        session = self.get_session()
+        try:
+            # Check if device already exists
+            existing = session.query(Device).filter_by(id=device_data['id']).first()
+            if existing:
+                return None
+            
+            device = Device(**device_data)
+            session.add(device)
+            session.commit()
+            session.refresh(device)
+            return device
+        except Exception as e:
+            session.rollback()
+            print(f"Error creating device: {e}")
+            return None
+        finally:
+            session.close()
+
+    def update_device(self, device_id: str, **updates) -> bool:
+        """Update device information"""
+        session = self.get_session()
+        try:
+            device = session.query(Device).filter_by(id=device_id).first()
+            if not device:
+                return False
+            
+            # Update allowed fields
+            allowed_fields = ['name', 'device_type', 'room', 'supported_actions', 'capabilities', 
+                            'current_state', 'min_familiarity_required', 'requires_auth', 'is_active']
+            for field, value in updates.items():
+                if field in allowed_fields and value is not None:
+                    setattr(device, field, value)
+            
+            device.last_updated = datetime.utcnow()
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error updating device {device_id}: {e}")
+            return False
+        finally:
+            session.close()
+
+    def delete_device(self, device_id: str, soft_delete: bool = True) -> bool:
+        """Delete device (soft delete by default)"""
+        session = self.get_session()
+        try:
+            device = session.query(Device).filter_by(id=device_id).first()
+            if not device:
+                return False
+            
+            if soft_delete:
+                device.is_active = False
+                device.last_updated = datetime.utcnow()
+            else:
+                session.delete(device)
+            
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error deleting device {device_id}: {e}")
+            return False
+        finally:
+            session.close()
+
+    def get_devices_by_room(self, room: str, active_only: bool = True) -> List[Device]:
+        """Get devices by room"""
+        session = self.get_session()
+        try:
+            query = session.query(Device).filter_by(room=room)
+            if active_only:
+                query = query.filter_by(is_active=True)
+            return query.all()
+        finally:
+            session.close()
+
+    def get_devices_by_type(self, device_type: str, active_only: bool = True) -> List[Device]:
+        """Get devices by type"""
+        session = self.get_session()
+        try:
+            query = session.query(Device).filter_by(device_type=device_type)
+            if active_only:
+                query = query.filter_by(is_active=True)
+            return query.all()
+        finally:
+            session.close()
+
+    # Bulk Operations
+    def bulk_create_users(self, users_data: List[Dict]) -> Dict[str, Any]:
+        """Bulk create users"""
+        session = self.get_session()
+        results = {"created": 0, "errors": [], "users": []}
+        
+        try:
+            for user_data in users_data:
+                try:
+                    # Check if user already exists
+                    existing = session.query(User).filter_by(id=user_data.get('username', '')).first()
+                    if existing:
+                        results["errors"].append(f"User {user_data.get('username')} already exists")
+                        continue
+                    
+                    user = User(
+                        id=user_data['username'],
+                        username=user_data['username'],
+                        email=user_data.get('email'),
+                        familiarity_score=user_data.get('familiarity_score', 25)
+                    )
+                    session.add(user)
+                    results["created"] += 1
+                    results["users"].append(user_data['username'])
+                except Exception as e:
+                    results["errors"].append(f"Error creating user {user_data.get('username', 'unknown')}: {e}")
+            
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            results["errors"].append(f"Bulk operation failed: {e}")
+        finally:
+            session.close()
+        
+        return results
+
+    def bulk_create_devices(self, devices_data: List[Dict]) -> Dict[str, Any]:
+        """Bulk create devices"""
+        session = self.get_session()
+        results = {"created": 0, "errors": [], "devices": []}
+        
+        try:
+            for device_data in devices_data:
+                try:
+                    # Check if device already exists
+                    existing = session.query(Device).filter_by(id=device_data['id']).first()
+                    if existing:
+                        results["errors"].append(f"Device {device_data['id']} already exists")
+                        continue
+                    
+                    device = Device(**device_data)
+                    session.add(device)
+                    results["created"] += 1
+                    results["devices"].append(device_data['id'])
+                except Exception as e:
+                    results["errors"].append(f"Error creating device {device_data.get('id', 'unknown')}: {e}")
+            
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            results["errors"].append(f"Bulk operation failed: {e}")
+        finally:
+            session.close()
+        
+        return results
+"""
+User Device Management Methods for DatabaseService
+These methods will be added to database_service.py
+"""
+
+# User Device Management Methods
+    def get_user_devices(self, user_id: str, active_only: bool = True) -> List[UserDevice]:
+    """Get all devices accessible to a user"""
+    session = self.get_session()
+    try:
+        query = session.query(UserDevice).filter_by(user_id=user_id)
+        
+        if active_only:
+            query = query.filter_by(is_accessible=True)
+            query = query.join(Device).filter(Device.is_active == True)
+        
+        return query.all()
+    finally:
+        session.close()
+
+    def add_user_device(self, user_id: str, device_id: str, **kwargs) -> Optional[UserDevice]:
+    """Add a device to user's device list"""
+    session = self.get_session()
+    try:
+        device = session.query(Device).filter_by(id=device_id).first()
+        if not device:
+            return None
+        
+        existing = session.query(UserDevice).filter_by(
+            user_id=user_id, device_id=device_id
+        ).first()
+        if existing:
+            return None
+        
+        user_device = UserDevice(
+            user_id=user_id,
+            device_id=device_id,
+            custom_name=kwargs.get('custom_name'),
+            is_favorite=kwargs.get('is_favorite', False),
+            is_accessible=kwargs.get('is_accessible', True),
+            min_familiarity_required=kwargs.get('min_familiarity_required'),
+            custom_permissions=kwargs.get('custom_permissions', {}),
+            allowed_actions=kwargs.get('allowed_actions', device.supported_actions),
+            user_preferences=kwargs.get('user_preferences', {}),
+            quick_actions=kwargs.get('quick_actions', [])
+        )
+        
+        session.add(user_device)
+        session.commit()
+        session.refresh(user_device)
+        return user_device
+    except Exception as e:
+        session.rollback()
+        print(f"Error adding device to user: {e}")
+        return None
+    finally:
+        session.close()
+
+    def update_user_device(self, user_id: str, device_id: str, **updates) -> bool:
+    """Update user's device configuration"""
+    session = self.get_session()
+    try:
+        user_device = session.query(UserDevice).filter_by(
+            user_id=user_id, device_id=device_id
+        ).first()
+        
+        if not user_device:
+            return False
+        
+        allowed_fields = [
+            'custom_name', 'is_favorite', 'is_accessible', 'min_familiarity_required',
+            'custom_permissions', 'allowed_actions', 'user_preferences', 'quick_actions'
+        ]
+        
+        for field, value in updates.items():
+            if field in allowed_fields and value is not None:
+                setattr(user_device, field, value)
+        
+        session.commit()
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Error updating user device: {e}")
+        return False
+    finally:
+        session.close()
+
+    def remove_user_device(self, user_id: str, device_id: str) -> bool:
+    """Remove device from user's device list"""
+    session = self.get_session()
+    try:
+        user_device = session.query(UserDevice).filter_by(
+            user_id=user_id, device_id=device_id
+        ).first()
+        
+        if user_device:
+            session.delete(user_device)
+            session.commit()
+            return True
+        return False
+    finally:
+        session.close()
+
+    def get_user_device(self, user_id: str, device_id: str) -> Optional[UserDevice]:
+    """Get specific user-device relationship"""
+    session = self.get_session()
+    try:
+        return session.query(UserDevice).filter_by(
+            user_id=user_id, device_id=device_id
+        ).first()
+    finally:
+        session.close()
+
+    def export_user_devices(self, user_id: str) -> Dict[str, Any]:
+    """Export user's device configurations as JSON"""
+    session = self.get_session()
+    try:
+        user_devices = session.query(UserDevice).filter_by(user_id=user_id).all()
+        
+        devices_data = []
+        for ud in user_devices:
+            device_config = {
+                "device_id": ud.device_id,
+                "custom_name": ud.custom_name,
+                "is_favorite": ud.is_favorite,
+                "is_accessible": ud.is_accessible,
+                "min_familiarity_required": ud.min_familiarity_required,
+                "custom_permissions": ud.custom_permissions,
+                "allowed_actions": ud.allowed_actions,
+                "user_preferences": ud.user_preferences,
+                "quick_actions": ud.quick_actions,
+                "added_at": ud.added_at.isoformat() if ud.added_at else None,
+                "last_used": ud.last_used.isoformat() if ud.last_used else None,
+                "usage_count": ud.usage_count
+            }
+            devices_data.append(device_config)
+        
+        return {
+            "user_id": user_id,
+            "devices": devices_data,
+            "export_info": {
+                "total_count": len(devices_data),
+                "export_time": datetime.utcnow().isoformat()
+            }
+        }
+    finally:
+        session.close()
+
+    def import_user_devices(self, user_id: str, devices_data: List[Dict], overwrite_existing: bool = False) -> Dict[str, Any]:
+    """Import user's device configurations from JSON"""
+    results = {"imported": 0, "updated": 0, "errors": [], "devices": []}
+    
+    for device_config in devices_data:
+        try:
+            device_id = device_config.get('device_id')
+            if not device_id:
+                results["errors"].append("Missing device_id in configuration")
+                continue
+            
+            existing = self.get_user_device(user_id, device_id)
+            
+            if existing and not overwrite_existing:
+                results["errors"].append(f"Device {device_id} already exists for user")
+                continue
+            
+            if existing and overwrite_existing:
+                success = self.update_user_device(user_id, device_id, **device_config)
+                if success:
+                    results["updated"] += 1
+                    results["devices"].append(device_id)
+            else:
+                user_device = self.add_user_device(user_id, device_id, **device_config)
+                if user_device:
+                    results["imported"] += 1
+                    results["devices"].append(device_id)
+                else:
+                    results["errors"].append(f"Failed to add device {device_id}")
+                    
+        except Exception as e:
+            results["errors"].append(f"Error processing device {device_config.get('device_id', 'unknown')}: {e}")
+    
+    return results

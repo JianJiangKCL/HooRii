@@ -63,3 +63,6 @@ paho-mqtt>=1.6.1
 
 # Optional: Redis for caching
 redis>=5.0.0
+
+
+
