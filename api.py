@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from config import load_config, Config
-from main import HomeAITaskPlanner
+from main import HomeAITaskPlanner, create_ai_system
 from database_service import DatabaseService
 from models import User, Conversation, Device
 
@@ -162,7 +162,8 @@ async def startup():
     global config, planner, db_service
     try:
         config = load_config()
-        planner = HomeAITaskPlanner(config)
+        # Try to use LangGraph workflow, fallback to traditional
+        planner = await create_ai_system(config, use_langgraph=True)
         db_service = planner.db_service
         print("🚀 API server started successfully")
     except Exception as e:

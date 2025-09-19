@@ -42,6 +42,17 @@ from device_controller import DeviceController
 from character_system import CharacterSystem
 from langfuse_session_manager import LangfuseSessionManager
 
+# Try to import LangGraph workflow
+try:
+    from langraph_workflow import LangGraphHomeAISystem, create_langraph_system
+    LANGGRAPH_AVAILABLE = True
+    print("✅ LangGraph workflow available")
+except ImportError:
+    print("⚠️ Warning: LangGraph not available, using traditional workflow")
+    LANGGRAPH_AVAILABLE = False
+    LangGraphHomeAISystem = None
+    create_langraph_system = None
+
 
 class HomeAISystem:
     """Main orchestrator for the Home AI system with context-aware processing"""
@@ -446,6 +457,21 @@ async def main():
     finally:
         await system.cleanup()
 
+
+# Factory function to create AI system with optional LangGraph support
+async def create_ai_system(config: Config = None, use_langgraph: bool = True):
+    """Create AI system with optional LangGraph workflow"""
+    config = config or load_config()
+
+    if use_langgraph and LANGGRAPH_AVAILABLE:
+        print("🔗 Using LangGraph workflow")
+        return await create_langraph_system(config)
+    else:
+        print("🔧 Using traditional workflow")
+        return HomeAISystem(config)
+
+# Legacy alias for backward compatibility
+HomeAITaskPlanner = HomeAISystem
 
 if __name__ == "__main__":
     asyncio.run(main())
