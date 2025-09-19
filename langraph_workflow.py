@@ -20,6 +20,20 @@ except ImportError:
     print("⚠️ Warning: LangGraph not available")
     LANGGRAPH_AVAILABLE = False
 
+# Try to import Langfuse for observability
+try:
+    from langfuse import Langfuse, observe
+    LANGFUSE_AVAILABLE = True
+    print("✅ Langfuse SDK available for LangGraph")
+except ImportError:
+    print("⚠️ Warning: Langfuse not available")
+    LANGFUSE_AVAILABLE = False
+    Langfuse = None
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 from config import Config, load_config
 from database_service import DatabaseService
 from context_manager import ContextManager, SystemContext
@@ -47,6 +61,24 @@ class LangGraphHomeAISystem:
     def __init__(self, config: Config = None):
         self.config = config or load_config()
         self.logger = logging.getLogger(__name__)
+
+        # Initialize Langfuse if available
+        self.langfuse_enabled = self.config.langfuse.enabled and LANGFUSE_AVAILABLE
+        self.langfuse_client = None
+        self.current_trace = None
+
+        if self.langfuse_enabled:
+            try:
+                # Initialize Langfuse client
+                self.langfuse_client = Langfuse(
+                    public_key=self.config.langfuse.public_key,
+                    secret_key=self.config.langfuse.secret_key,
+                    host=self.config.langfuse.host
+                )
+                self.logger.info("Langfuse integration enabled for LangGraph")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Langfuse: {e}")
+                self.langfuse_enabled = False
 
         # Initialize services
         self.db_service = DatabaseService(self.config)
@@ -93,6 +125,7 @@ class LangGraphHomeAISystem:
 
         return workflow.compile(checkpointer=self.memory)
 
+    @observe(name="analyze_intent_node")
     async def _analyze_intent_node(self, state: AISystemState) -> AISystemState:
         """Node for intent analysis"""
         try:
@@ -120,6 +153,7 @@ class LangGraphHomeAISystem:
             self.logger.error(f"Intent analysis failed: {e}")
             return {**state, "error": f"Intent analysis failed: {str(e)}"}
 
+    @observe(name="execute_device_actions_node")
     async def _execute_device_actions_node(self, state: AISystemState) -> AISystemState:
         """Node for device action execution"""
         try:
@@ -133,14 +167,16 @@ class LangGraphHomeAISystem:
 
             # Execute device actions
             results = []
-            for action in actions:
-                if action.get("type") == "device_control":
-                    result = await self.device_controller.execute_action(
-                        action,
-                        state.get("user_id"),
-                        state.get("session_id")
-                    )
-                    results.append(result)
+            context = self.context_manager.get_context()
+
+            # Process the entire intent through device controller
+            device_result = await self.device_controller.process_device_intent(
+                intent_analysis,
+                context
+            )
+
+            if device_result.get("success"):
+                results.append(device_result)
 
             return {
                 **state,
@@ -155,24 +191,30 @@ class LangGraphHomeAISystem:
             self.logger.error(f"Device action execution failed: {e}")
             return {**state, "error": f"Device action execution failed: {str(e)}"}
 
+    @observe(name="generate_character_response_node")
     async def _generate_character_response_node(self, state: AISystemState) -> AISystemState:
         """Node for character response generation"""
         try:
             self.logger.info("Generating character response")
 
             # Prepare context for character system
-            character_context = {
-                "user_input": state["user_input"],
+            context = self.context_manager.get_context()
+
+            # Update context with current state
+            context.user_input = state["user_input"]
+            if state.get("intent_analysis"):
+                context.current_intent = state["intent_analysis"]
+
+            # Prepare response data
+            response_data = {
                 "intent_analysis": state.get("intent_analysis", {}),
-                "device_actions": state.get("device_actions", []),
-                "context": state.get("context", {})
+                "device_actions": state.get("device_actions", [])
             }
 
             # Generate character response
             response = await self.character_system.generate_response(
-                character_context,
-                state.get("user_id"),
-                state.get("session_id")
+                context,
+                response_data
             )
 
             return {
@@ -188,6 +230,7 @@ class LangGraphHomeAISystem:
             self.logger.error(f"Character response generation failed: {e}")
             return {**state, "error": f"Character response generation failed: {str(e)}"}
 
+    @observe(name="finalize_response_node")
     async def _finalize_response_node(self, state: AISystemState) -> AISystemState:
         """Node for finalizing the response"""
         try:
@@ -216,6 +259,7 @@ class LangGraphHomeAISystem:
             self.logger.error(f"Response finalization failed: {e}")
             return {**state, "error": f"Response finalization failed: {str(e)}"}
 
+    @observe(name="handle_error_node")
     async def _handle_error_node(self, state: AISystemState) -> AISystemState:
         """Node for error handling"""
         error_message = state.get("error", "Unknown error occurred")
@@ -272,8 +316,9 @@ class LangGraphHomeAISystem:
         except Exception as e:
             self.logger.error(f"Context update failed: {e}")
 
+    @observe(name="langgraph_workflow")
     async def process_message(self, user_input: str, user_id: str = None, session_id: str = None) -> Dict[str, Any]:
-        """Process a user message through the LangGraph workflow"""
+        """Process a user message through the LangGraph workflow with Langfuse tracing"""
         if not LANGGRAPH_AVAILABLE:
             raise RuntimeError("LangGraph is not available. Please install langgraph package.")
 
@@ -291,9 +336,11 @@ class LangGraphHomeAISystem:
             metadata={}
         )
 
-        # Execute workflow
+        # Execute workflow with Langfuse tracing
         thread_id = session_id or str(uuid.uuid4())
         config = {"configurable": {"thread_id": thread_id}}
+
+        # No need to manually start trace - @observe decorators will handle it
 
         try:
             result = await self.workflow.ainvoke(initial_state, config)
@@ -301,6 +348,32 @@ class LangGraphHomeAISystem:
             # Parse final response
             final_response_str = result.get("final_response", "{}")
             final_response = json.loads(final_response_str)
+
+            # Score the trace if Langfuse is enabled
+            if self.langfuse_enabled and self.langfuse_client:
+                try:
+                    # Update current trace with metadata
+                    self.langfuse_client.update_current_trace(
+                        user_id=user_id,
+                        session_id=session_id,
+                        output=final_response
+                    )
+
+                    # Score based on success/failure
+                    if not result.get("error"):
+                        self.langfuse_client.score_current_trace(
+                            name="completion",
+                            value=1.0,
+                            comment="Workflow completed successfully"
+                        )
+                    else:
+                        self.langfuse_client.score_current_trace(
+                            name="completion",
+                            value=0.0,
+                            comment=f"Workflow failed: {result.get('error')}"
+                        )
+                except Exception as e:
+                    self.logger.warning(f"Failed to update trace: {e}")
 
             return final_response
 
