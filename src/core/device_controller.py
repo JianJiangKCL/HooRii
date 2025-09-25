@@ -22,9 +22,9 @@ except ImportError:
             return func
         return decorator
 
-from config import Config
-from database_service import DatabaseService
-from context_manager import SystemContext
+from ..utils.config import Config
+from ..services.database_service import DatabaseService
+from .context_manager import SystemContext
 
 
 class DeviceController:

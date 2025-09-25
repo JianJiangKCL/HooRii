@@ -34,17 +34,17 @@ except ImportError:
     Langfuse = None
     get_client = None
 
-from config import Config, load_config
-from database_service import DatabaseService
-from context_manager import ContextManager, SystemContext
-from intent_analyzer import IntentAnalyzer
-from device_controller import DeviceController
-from character_system import CharacterSystem
-from langfuse_session_manager import LangfuseSessionManager
+from ..utils.config import Config, load_config
+from ..services.database_service import DatabaseService
+from ..core.context_manager import ContextManager, SystemContext
+from ..core.intent_analyzer import IntentAnalyzer
+from ..core.device_controller import DeviceController
+from ..core.character_system import CharacterSystem
+from ..services.langfuse_session_manager import LangfuseSessionManager
 
 # Try to import LangGraph workflow
 try:
-    from langraph_workflow import LangGraphHomeAISystem, create_langraph_system
+    from .langraph_workflow import LangGraphHomeAISystem, create_langraph_system
     LANGGRAPH_AVAILABLE = True
     print("✅ LangGraph workflow available")
 except ImportError:
@@ -326,7 +326,7 @@ class HomeAISystem:
                     # Try to get existing conversation by ID
                     session = self.db_service.get_session()
                     try:
-                        from models import Conversation
+                        from ..models.database import Conversation
                         db_conversation = session.query(Conversation).filter_by(id=session_id).first()
                     finally:
                         session.close()

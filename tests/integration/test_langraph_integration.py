@@ -12,8 +12,8 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load_config
-from main import create_ai_system
+from src.utils.config import load_config
+from src.workflows.traditional_workflow import create_ai_system
 
 async def test_langraph_integration():
     """Test LangGraph workflow integration"""

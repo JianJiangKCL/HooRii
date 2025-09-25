@@ -8,9 +8,9 @@ import sys
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from config import load_config
-from database_service import DatabaseService
-from models import Device
+from .config import load_config
+from ..services.database_service import DatabaseService
+from ..models.database import Device
 
 
 class DeviceSimulator:

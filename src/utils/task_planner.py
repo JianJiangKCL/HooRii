@@ -21,9 +21,9 @@ except ImportError:
             return func
         return decorator
 
-from config import Config
-from database_service import DatabaseService
-from models import ConversationContext
+from .config import Config
+from ..services.database_service import DatabaseService
+from ..models.database import ConversationContext
 
 
 class TaskPlanner:
@@ -48,7 +48,7 @@ class TaskPlanner:
     def intent_analyzer(self):
         """Lazy-load intent analyzer"""
         if self._intent_analyzer is None:
-            from intent_analyzer import IntentAnalyzer
+            from ..core.intent_analyzer import IntentAnalyzer
             self._intent_analyzer = IntentAnalyzer(self.config)
         return self._intent_analyzer
     
@@ -56,7 +56,7 @@ class TaskPlanner:
     def device_controller(self):
         """Lazy-load device controller"""
         if self._device_controller is None:
-            from device_controller import DeviceController
+            from ..core.device_controller import DeviceController
             self._device_controller = DeviceController(self.config)
         return self._device_controller
     
@@ -64,7 +64,7 @@ class TaskPlanner:
     def character_system(self):
         """Lazy-load character system"""
         if self._character_system is None:
-            from character_system import CharacterSystem
+            from ..core.character_system import CharacterSystem
             self._character_system = CharacterSystem(self.config)
         return self._character_system
     

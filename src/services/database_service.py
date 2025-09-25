@@ -9,11 +9,11 @@ from typing import List, Dict, Optional, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, desc, String
 
-from models import (
+from ..models.database import (
     User, Conversation, Message, UserMemory, Device, UserDevice,
     DeviceInteraction, SystemSettings, DatabaseManager
 )
-from config import Config
+from ..utils.config import Config
 
 class DatabaseService:
     """Service layer for database operations"""

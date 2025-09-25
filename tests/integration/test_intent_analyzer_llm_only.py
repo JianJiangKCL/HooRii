@@ -12,9 +12,9 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import Config
-from context_manager import SystemContext
-from intent_analyzer import IntentAnalyzer
+from src.utils.config import Config
+from src.core.context_manager import SystemContext
+from src.core.intent_analyzer import IntentAnalyzer
 
 async def test_llm_intent_analysis():
     """Test LLM-only intent analysis"""

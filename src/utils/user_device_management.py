@@ -8,9 +8,9 @@ import json
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from config import load_config
-from database_service import DatabaseService
-from models import User, Device, UserMemory
+from .config import load_config
+from ..services.database_service import DatabaseService
+from ..models.database import User, Device, UserMemory
 
 class UserDeviceManager:
     """用户和设备管理类"""

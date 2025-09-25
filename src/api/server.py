@@ -12,10 +12,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import uvicorn
 
-from config import load_config, Config
-from main import HomeAITaskPlanner, create_ai_system
-from database_service import DatabaseService
-from models import User, Conversation, Device
+from ..utils.config import load_config, Config
+from ..workflows.traditional_workflow import HomeAITaskPlanner, create_ai_system
+from ..services.database_service import DatabaseService
+from ..models.database import User, Conversation, Device
 
 # Initialize FastAPI app
 app = FastAPI(

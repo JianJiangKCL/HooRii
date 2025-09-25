@@ -11,9 +11,9 @@ import json
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import Config
-from context_manager import SystemContext  
-from character_system import CharacterSystem
+from src.utils.config import Config
+from src.core.context_manager import SystemContext  
+from src.core.character_system import CharacterSystem
 
 async def test_character_output():
     """Test what format character system actually returns"""

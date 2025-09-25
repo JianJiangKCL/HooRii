@@ -12,7 +12,7 @@ print("-" * 50)
 try:
     # 使用 grep -v 过滤掉 OpenTelemetry 错误信息
     process = subprocess.Popen(
-        [sys.executable, "main.py"],
+        [sys.executable, "src/main.py"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

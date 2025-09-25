@@ -11,7 +11,7 @@ import logging
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main import HomeAISystem
+from src.workflows.traditional_workflow import HomeAISystem
 
 async def test_clean_interactions():
     """Test multiple interactions with clean output"""

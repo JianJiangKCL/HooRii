@@ -34,13 +34,13 @@ except ImportError:
             return func
         return decorator
 
-from config import Config, load_config
-from database_service import DatabaseService
-from context_manager import ContextManager, SystemContext
-from intent_analyzer import IntentAnalyzer
-from device_controller import DeviceController
-from character_system import CharacterSystem
-from langfuse_session_manager import LangfuseSessionManager
+from ..utils.config import Config, load_config
+from ..services.database_service import DatabaseService
+from ..core.context_manager import ContextManager, SystemContext
+from ..core.intent_analyzer import IntentAnalyzer
+from ..core.device_controller import DeviceController
+from ..core.character_system import CharacterSystem
+from ..services.langfuse_session_manager import LangfuseSessionManager
 
 # State definition for LangGraph
 class AISystemState(TypedDict):

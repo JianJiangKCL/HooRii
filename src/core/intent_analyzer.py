@@ -22,8 +22,8 @@ except ImportError:
             return func
         return decorator
 
-from config import Config
-from context_manager import SystemContext
+from ..utils.config import Config
+from .context_manager import SystemContext
 
 
 class IntentAnalyzer:
