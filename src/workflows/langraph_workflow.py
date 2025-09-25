@@ -40,7 +40,14 @@ from ..core.context_manager import ContextManager, SystemContext
 from ..core.intent_analyzer import IntentAnalyzer
 from ..core.device_controller import DeviceController
 from ..core.character_system import CharacterSystem
+from ..core.fast_processor import FastProcessor
+from ..core.minimal_processor import MinimalProcessor
+from ..core.task_planner import TaskPlanner
+from ..core.tool_executor import ToolExecutor
 from ..services.langfuse_session_manager import LangfuseSessionManager
+from ..services.agora_tts_service import AgoraTTSService
+from ..services.conversation_summary_service import ConversationSummaryService
+from .planner_nodes import PlannerNodes
 
 # State definition for LangGraph
 class AISystemState(TypedDict):
@@ -86,7 +93,16 @@ class LangGraphHomeAISystem:
         self.intent_analyzer = IntentAnalyzer(self.config)
         self.device_controller = DeviceController(self.config)
         self.character_system = CharacterSystem(self.config)
+        self.fast_processor = FastProcessor(self.config)
+        self.minimal_processor = MinimalProcessor(self.config)
+        self.task_planner = TaskPlanner(self.config)
+        self.tool_executor = ToolExecutor(self.config)
+        self.agora_tts = AgoraTTSService(self.config)
+        self.conversation_summary = ConversationSummaryService(self.config)
         self.session_manager = LangfuseSessionManager(self.config)
+        self.use_fast_mode = False  # Disable fast mode
+        self.use_minimal_mode = True  # Enable ultra-minimal mode for stability
+        self.use_planner_mode = False  # Disable planner mode to avoid overload
 
         # Initialize LangGraph workflow
         if LANGGRAPH_AVAILABLE:
@@ -100,30 +116,168 @@ class LangGraphHomeAISystem:
         """Create the LangGraph workflow"""
         workflow = StateGraph(AISystemState)
 
-        # Add nodes
-        workflow.add_node("analyze_intent", self._analyze_intent_node)
-        workflow.add_node("execute_device_actions", self._execute_device_actions_node)
-        workflow.add_node("generate_character_response", self._generate_character_response_node)
-        workflow.add_node("finalize_response", self._finalize_response_node)
-        workflow.add_node("handle_error", self._handle_error_node)
+        if self.use_minimal_mode:
+            # Minimal mode: ultra-simple processing
+            workflow.add_node("minimal_process", self._minimal_process_node)
+            workflow.add_node("execute_device_actions", self._execute_device_actions_node)
+            workflow.add_node("finalize_response", self._finalize_response_node)
+            workflow.add_node("handle_error", self._handle_error_node)
 
-        # Define edges
-        workflow.add_edge(START, "analyze_intent")
-        workflow.add_conditional_edges(
-            "analyze_intent",
-            self._should_execute_devices,
-            {
-                "execute": "execute_device_actions",
-                "skip": "generate_character_response",
-                "error": "handle_error"
-            }
-        )
-        workflow.add_edge("execute_device_actions", "generate_character_response")
-        workflow.add_edge("generate_character_response", "finalize_response")
-        workflow.add_edge("finalize_response", END)
-        workflow.add_edge("handle_error", END)
+            # Define edges for minimal mode
+            workflow.add_edge(START, "minimal_process")
+            workflow.add_conditional_edges(
+                "minimal_process",
+                self._should_execute_devices,
+                {
+                    "execute": "execute_device_actions",
+                    "skip": "finalize_response",
+                    "error": "handle_error"
+                }
+            )
+            workflow.add_edge("execute_device_actions", "finalize_response")
+            workflow.add_edge("finalize_response", END)
+            workflow.add_edge("handle_error", END)
+        elif self.use_fast_mode:
+            # Fast mode: single LLM call
+            workflow.add_node("fast_process", self._fast_process_node)
+            workflow.add_node("execute_device_actions", self._execute_device_actions_node)
+            workflow.add_node("finalize_response", self._finalize_response_node)
+            workflow.add_node("handle_error", self._handle_error_node)
+
+            # Define edges for fast mode
+            workflow.add_edge(START, "fast_process")
+            workflow.add_conditional_edges(
+                "fast_process",
+                self._should_execute_devices,
+                {
+                    "execute": "execute_device_actions",
+                    "skip": "finalize_response",
+                    "error": "handle_error"
+                }
+            )
+            workflow.add_edge("execute_device_actions", "finalize_response")
+            workflow.add_edge("finalize_response", END)
+            workflow.add_edge("handle_error", END)
+        elif self.use_planner_mode:
+            # Planner mode: full tool-based workflow
+            workflow.add_node("make_plan", self._make_plan_node)
+            workflow.add_node("execute_plan", self._execute_plan_node)
+            workflow.add_node("generate_audio", self._generate_audio_node)
+            workflow.add_node("finalize_response", self._finalize_response_node)
+            workflow.add_node("handle_error", self._handle_error_node)
+
+            # Define edges for planner mode
+            workflow.add_edge(START, "make_plan")
+            workflow.add_conditional_edges(
+                "make_plan",
+                self._should_execute_plan,
+                {
+                    "execute": "execute_plan",
+                    "error": "handle_error"
+                }
+            )
+            workflow.add_conditional_edges(
+                "execute_plan",
+                self._should_generate_audio,
+                {
+                    "generate_audio": "generate_audio",
+                    "skip_audio": "finalize_response",
+                    "error": "handle_error"
+                }
+            )
+            workflow.add_edge("generate_audio", "finalize_response")
+            workflow.add_edge("finalize_response", END)
+            workflow.add_edge("handle_error", END)
+        else:
+            # Original mode: separate LLM calls
+            workflow.add_node("analyze_intent", self._analyze_intent_node)
+            workflow.add_node("execute_device_actions", self._execute_device_actions_node)
+            workflow.add_node("generate_character_response", self._generate_character_response_node)
+            workflow.add_node("finalize_response", self._finalize_response_node)
+            workflow.add_node("handle_error", self._handle_error_node)
+
+            # Define edges
+            workflow.add_edge(START, "analyze_intent")
+            workflow.add_conditional_edges(
+                "analyze_intent",
+                self._should_execute_devices,
+                {
+                    "execute": "execute_device_actions",
+                    "skip": "generate_character_response",
+                    "error": "handle_error"
+                }
+            )
+            workflow.add_edge("execute_device_actions", "generate_character_response")
+            workflow.add_edge("generate_character_response", "finalize_response")
+            workflow.add_edge("finalize_response", END)
+            workflow.add_edge("handle_error", END)
 
         return workflow.compile(checkpointer=self.memory)
+
+    @observe(name="fast_process_node")
+    async def _fast_process_node(self, state: AISystemState) -> AISystemState:
+        """Fast processing node - combines intent and response"""
+        try:
+            self.logger.info("Starting fast processing")
+
+            # Load context
+            context = await self._load_context(state)
+
+            # Fast process in single LLM call
+            result = await self.fast_processor.process_fast(
+                state["user_input"],
+                context
+            )
+
+            return {
+                **state,
+                "context": context.to_dict() if context else {},
+                "intent_analysis": result["intent_analysis"],
+                "execution_plan": result.get("execution_plan", {}),
+                "character_response": result["response"],
+                "metadata": {
+                    "fast_mode": True,
+                    "has_execution_plan": bool(result.get("execution_plan", {}).get("plan")),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Fast processing failed: {e}")
+            return {**state, "error": f"Fast processing failed: {str(e)}"}
+
+    @observe(name="minimal_process_node")
+    async def _minimal_process_node(self, state: AISystemState) -> AISystemState:
+        """Minimal processing node - ultra-simple processing with rate limiting"""
+        try:
+            self.logger.info("Starting minimal processing")
+
+            # Load context
+            context = await self._load_context(state)
+
+            # Minimal process with rate limiting
+            result = await self.minimal_processor.process_minimal(
+                state["user_input"],
+                context
+            )
+
+            return {
+                **state,
+                "context": context.to_dict() if context else {},
+                "intent_analysis": result["intent_analysis"],
+                "character_response": result["response"],
+                "device_actions": result.get("device_actions", []),
+                "metadata": {
+                    "minimal_mode": True,
+                    "rate_limited": True,
+                    "fallback_used": result.get("metadata", {}).get("fallback_used", False),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Minimal processing failed: {e}")
+            return {**state, "error": f"Minimal processing failed: {str(e)}"}
 
     @observe(name="analyze_intent_node")
     async def _analyze_intent_node(self, state: AISystemState) -> AISystemState:
@@ -155,21 +309,49 @@ class LangGraphHomeAISystem:
 
     @observe(name="execute_device_actions_node")
     async def _execute_device_actions_node(self, state: AISystemState) -> AISystemState:
-        """Node for device action execution"""
+        """Node for device action execution with familiarity check"""
         try:
             self.logger.info("Executing device actions")
 
             intent_analysis = state.get("intent_analysis", {})
-            actions = intent_analysis.get("actions", [])
+            context = self.context_manager.get_context()
+            familiarity = context.familiarity_score
 
-            if not actions:
+            # Log familiarity check for devices
+            if intent_analysis.get("involves_hardware"):
+                device = intent_analysis.get("device")
+                action = intent_analysis.get("action")
+                self.logger.info(f"Device control requested: {device} -> {action}")
+                self.logger.info(f"User familiarity: {familiarity}/100 (min required: 40)")
+
+                familiarity_check = intent_analysis.get("familiarity_check", "unknown")
+                if familiarity < 40:
+                    self.logger.warning(f"Device control denied - insufficient familiarity: {familiarity} < 40")
+                    return {
+                        **state,
+                        "device_actions": [{
+                            "success": False,
+                            "reason": "insufficient_familiarity",
+                            "required_familiarity": 40,
+                            "current_familiarity": familiarity,
+                            "device": device,
+                            "action": action
+                        }],
+                        "metadata": {
+                            **state.get("metadata", {}),
+                            "device_actions_timestamp": datetime.now().isoformat(),
+                            "familiarity_check": "failed"
+                        }
+                    }
+                else:
+                    self.logger.info(f"Device control authorized - familiarity check passed")
+
+            # Check if there are device actions to execute
+            if not intent_analysis.get("involves_hardware"):
                 return {**state, "device_actions": []}
 
-            # Execute device actions
+            # Execute device actions through controller
             results = []
-            context = self.context_manager.get_context()
-
-            # Process the entire intent through device controller
             device_result = await self.device_controller.process_device_intent(
                 intent_analysis,
                 context
@@ -177,13 +359,15 @@ class LangGraphHomeAISystem:
 
             if device_result.get("success"):
                 results.append(device_result)
+                self.logger.info(f"Device action executed successfully: {device_result}")
 
             return {
                 **state,
                 "device_actions": results,
                 "metadata": {
                     **state.get("metadata", {}),
-                    "device_actions_timestamp": datetime.now().isoformat()
+                    "device_actions_timestamp": datetime.now().isoformat(),
+                    "familiarity_check": "passed"
                 }
             }
 
@@ -283,15 +467,17 @@ class LangGraphHomeAISystem:
             return "error"
 
         intent_analysis = state.get("intent_analysis", {})
-        actions = intent_analysis.get("actions", [])
 
-        # Check if there are any device control actions
-        has_device_actions = any(
-            action.get("type") == "device_control"
-            for action in actions
-        )
+        # Check if hardware operation is requested
+        involves_hardware = intent_analysis.get("involves_hardware", False)
 
-        return "execute" if has_device_actions else "skip"
+        if involves_hardware:
+            device = intent_analysis.get("device")
+            self.logger.info(f"Device operation detected: {device}")
+            return "execute"
+        else:
+            self.logger.info("No device operations needed")
+            return "skip"
 
     async def _load_context(self, state: AISystemState) -> Optional[SystemContext]:
         """Load system context"""
@@ -398,6 +584,152 @@ class LangGraphHomeAISystem:
         except Exception as e:
             self.logger.error(f"Failed to get workflow state: {e}")
             return None
+
+    # Planner-based workflow nodes
+    @observe(name="make_plan_node")
+    async def _make_plan_node(self, state: AISystemState) -> AISystemState:
+        """Planner node - creates execution plan"""
+        try:
+            self.logger.info("Starting task planning")
+
+            # Load context
+            context = await self._load_context(state)
+
+            # Create execution plan
+            plan = await self.task_planner.make_plan(
+                state["user_input"],
+                context,
+                task_complexity="auto"
+            )
+
+            return {
+                **state,
+                "context": context.to_dict() if context else {},
+                "execution_plan": plan,
+                "metadata": {
+                    "planning_timestamp": datetime.now().isoformat(),
+                    "planner_mode": True
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Task planning failed: {e}")
+            return {**state, "error": f"Task planning failed: {str(e)}"}
+
+    @observe(name="execute_plan_node")
+    async def _execute_plan_node(self, state: AISystemState) -> AISystemState:
+        """Execute plan node - runs planned tools"""
+        try:
+            self.logger.info("Executing task plan")
+
+            execution_plan = state.get("execution_plan", {})
+            context = await self._load_context(state)
+
+            # Execute the plan using tool executor
+            execution_result = await self.tool_executor.execute_plan(
+                execution_plan,
+                context
+            )
+
+            # Extract results for character response
+            intent_analysis = None
+            character_response = None
+            device_actions = []
+
+            # Parse execution results
+            for step_result in execution_result.get("step_results", []):
+                action = step_result.get("action")
+
+                if action == "intent_analysis" and step_result.get("success"):
+                    intent_analysis = step_result.get("intent_result", {})
+                elif action == "device_control" and step_result.get("success"):
+                    device_actions.append(step_result)
+
+            # If no character response yet, generate one based on results
+            if not character_response and intent_analysis:
+                response_data = {
+                    "intent_analysis": intent_analysis,
+                    "device_actions": device_actions,
+                    "execution_result": execution_result
+                }
+                character_response = await self.character_system.generate_response(
+                    context,
+                    response_data
+                )
+
+            return {
+                **state,
+                "intent_analysis": intent_analysis,
+                "device_actions": device_actions,
+                "character_response": character_response or "......",
+                "execution_result": execution_result,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "execution_timestamp": datetime.now().isoformat(),
+                    "tools_executed": len(execution_result.get("step_results", []))
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Plan execution failed: {e}")
+            return {**state, "error": f"Plan execution failed: {str(e)}"}
+
+    @observe(name="generate_audio_node")
+    async def _generate_audio_node(self, state: AISystemState) -> AISystemState:
+        """Audio generation node - converts text to speech"""
+        try:
+            self.logger.info("Generating audio output")
+
+            character_response = state.get("character_response", "")
+            if not character_response:
+                return {**state, "audio_data": None}
+
+            # Generate audio using Agora TTS
+            audio_result = await self.tool_executor.execute_agora_tts(
+                character_response,
+                voice="zh-CN-XiaoxiaoNeural"
+            )
+
+            return {
+                **state,
+                "audio_data": audio_result.get("audio_data") if audio_result.get("success") else None,
+                "audio_generation_result": audio_result,
+                "metadata": {
+                    **state.get("metadata", {}),
+                    "audio_generation_timestamp": datetime.now().isoformat(),
+                    "audio_enabled": bool(audio_result.get("success"))
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Audio generation failed: {e}")
+            return {**state, "error": f"Audio generation failed: {str(e)}"}
+
+    def _should_execute_plan(self, state: AISystemState) -> str:
+        """Conditional edge for plan execution"""
+        if state.get("error"):
+            return "error"
+
+        execution_plan = state.get("execution_plan", {})
+        plan_steps = execution_plan.get("plan", [])
+
+        if plan_steps:
+            self.logger.info(f"Plan has {len(plan_steps)} steps, executing")
+            return "execute"
+        else:
+            self.logger.warning("No execution plan found")
+            return "error"
+
+    def _should_generate_audio(self, state: AISystemState) -> str:
+        """Conditional edge for audio generation"""
+        if state.get("error"):
+            return "error"
+
+        # Check if audio generation is needed and enabled
+        if self.agora_tts.enabled and state.get("character_response"):
+            return "generate_audio"
+        else:
+            return "skip_audio"
 
 # Compatibility function for existing code
 async def create_langraph_system(config: Config = None) -> LangGraphHomeAISystem:

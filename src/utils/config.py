@@ -54,6 +54,14 @@ class VectorSearchConfig:
     model_name: str = "all-MiniLM-L6-v2"
     dimension: int = 384
 
+@dataclass
+class AgoraConfig:
+    """Agora (声网) TTS configuration"""
+    app_key: str
+    app_secret: str
+    enabled: bool = True
+    project_id: str = "default"
+
 class Config:
     """Main configuration class"""
     
@@ -63,6 +71,7 @@ class Config:
         self.anthropic = self._load_anthropic_config()
         self.system = self._load_system_config()
         self.vector_search = self._load_vector_search_config()
+        self.agora = self._load_agora_config()
     
     def _load_database_config(self) -> DatabaseConfig:
         """Load database configuration from environment variables"""
@@ -144,6 +153,25 @@ class Config:
             model_name=os.getenv("VECTOR_SEARCH_MODEL", "all-MiniLM-L6-v2"),
             dimension=int(os.getenv("VECTOR_SEARCH_DIMENSION", "384"))
         )
+
+    def _load_agora_config(self) -> AgoraConfig:
+        """Load Agora TTS configuration from environment variables"""
+        app_key = os.getenv("AGORA_APP_KEY")
+        app_secret = os.getenv("AGORA_APP_SECRET")
+
+        if not app_key or not app_secret:
+            return AgoraConfig(
+                app_key="",
+                app_secret="",
+                enabled=False
+            )
+
+        return AgoraConfig(
+            app_key=app_key,
+            app_secret=app_secret,
+            enabled=os.getenv("AGORA_TTS_ENABLED", "true").lower() == "true",
+            project_id=os.getenv("AGORA_PROJECT_ID", "default")
+        )
     
     def validate(self) -> bool:
         """Validate configuration"""
@@ -172,6 +200,7 @@ class Config:
         print(f"  Anthropic Model: {self.anthropic.model}")
         print(f"  Debug Mode: {self.system.debug}")
         print(f"  Vector Search: {'✅ Enabled' if self.vector_search.enabled else '❌ Disabled'}")
+        print(f"  Agora TTS: {'✅ Enabled' if self.agora.enabled else '❌ Disabled'}")
 
 def load_config() -> Config:
     """Load and validate configuration"""
@@ -224,6 +253,12 @@ VECTOR_SEARCH_ENABLED=false
 VECTOR_SEARCH_PROVIDER=sentence_transformers
 VECTOR_SEARCH_MODEL=all-MiniLM-L6-v2
 VECTOR_SEARCH_DIMENSION=384
+
+# Agora (声网) TTS API
+AGORA_APP_KEY=your_agora_app_key
+AGORA_APP_SECRET=your_agora_app_secret
+AGORA_TTS_ENABLED=true
+AGORA_PROJECT_ID=default
 """
     
     env_file = Path(".env.template")

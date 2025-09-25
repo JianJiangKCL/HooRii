@@ -69,17 +69,17 @@ class CharacterSystem:
         response_data: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate contextually-aware character response"""
-        
-        # Build comprehensive prompt based on context
+
+        # Build optimized prompt based on context
         character_prompt = self._build_character_prompt(context, response_data)
-        
+
         try:
             # Use prompt caching for the character system prompt to save tokens
             response = await asyncio.to_thread(
                 self.claude_client.messages.create,
                 model=self.config.anthropic.model,
-                max_tokens=self.config.anthropic.max_tokens,
-                temperature=0.7,  # Slightly higher for more natural responses
+                max_tokens=150,  # Reduced from 1000 for faster responses
+                temperature=0.5,  # Lower temperature for faster generation
                 system=[{
                     "type": "text",
                     "text": character_prompt["system"],
@@ -112,42 +112,16 @@ class CharacterSystem:
         context: SystemContext,
         response_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, str]:
-        """Build comprehensive character prompt with full context"""
-        
-        # Get conversation history
-        conv_history = context.get_conversation_context_for_llm(max_turns=5)
-        
-        # Determine response type from context
-        response_type = self._determine_response_type(context, response_data)
-        
-        # Build tone guidance based on familiarity
-        tone_guidance = self._get_tone_guidance(context.familiarity_score, context.conversation_tone)
-        
-        # Build specific context based on response type
-        specific_context = self._build_specific_context(response_type, context, response_data)
-        
+        """Build optimized character prompt with minimal context"""
+
+        # Get only recent conversation (reduced from 5 to 1)
+        conv_history = context.get_conversation_context_for_llm(max_turns=1)
+
+        # Simplified system prompt
         system_prompt = f"""
-{self.character_prompt}
-
-当前角色设定：
-- 熟悉度: {context.familiarity_score}/100
-- 对话基调: {context.conversation_tone}
-- 消息数: {context.message_count}
-
-{tone_guidance}
-
-对话历史:
-{conv_history if conv_history else "这是首次对话"}
-
-{specific_context}
-
-响应要求：
-1. 保持凌波丽的性格特征
-2. 根据熟悉度调整亲密程度
-3. 考虑对话历史保持连贯性
-4. 简洁但不失温度
-5. 在适当时候使用"......"表示停顿
-6. 只返回纯对话内容，不包含心理活动、动作描述或括号内容
+你是凌波丽。简洁、平静、内敛。
+使用"......"表示停顿。
+熟悉度:{context.familiarity_score}/100
 7. 避免使用（）描述动作或表情
 """
         
