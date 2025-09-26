@@ -1,64 +1,44 @@
-# Debug and Testing Directory
+# Debug & Testing Directory
 
-This directory contains all testing and debugging utilities for the HooRii Smart Home AI Assistant.
+This directory contains all test files and debugging utilities for the HooRii Smart Home AI Assistant.
 
 ## Test Files
 
-### Component Tests (Test individual components in isolation)
+### `agora_tts_test.py`
+Comprehensive test suite for the Agora TTS (Text-to-Speech) service.
 
-- `intent_analysis_test.py` - Tests the intent analysis component
-- `character_test.py` - Tests the character (凌波丽) response generation
-- `device_controller_test.py` - Tests device controller logic
+**Features tested:**
+- Configuration validation
+- API signature generation
+- TTS synthesis with different methods
+- Audio file saving
+- Error handling scenarios
 
-### Integration Tests
-
-- `integration_test.py` - Tests the full system flow
-
-### Usage
-
-Run individual component tests:
+**Usage:**
 ```bash
-cd /path/to/hoorii
-python debug/intent_analysis_test.py
-python debug/character_test.py
-python debug/device_controller_test.py
+cd /data/jj/proj/hoorii
+python debug/agora_tts_test.py
 ```
 
-Run integration test:
-```bash
-python debug/integration_test.py
-```
+**Requirements:**
+- Agora TTS must be properly configured in `.env` file
+- Network access to Agora API endpoints
+- Valid Agora credentials and project ID
 
-### Test Structure
+**Test Scenarios:**
+1. **Configuration Test**: Validates service setup and credentials
+2. **Signature Generation**: Tests API authentication signature creation
+3. **TTS Synthesis**: Tests actual text-to-speech conversion
+4. **File Save**: Tests saving audio output to file
+5. **Error Handling**: Tests various failure scenarios
 
-All test files follow this pattern:
-1. Add parent directory to Python path
-2. Disable OpenTelemetry for clean output
-3. Import required components
-4. Run focused tests with clear output
-5. Validate expected behavior
+The test will automatically skip network-dependent tests if the service is not properly configured, making it safe to run in any environment.
 
-### Adding New Tests
+## Test Guidelines
 
-When creating new test files:
-1. Use the naming convention: `component_test.py`
-2. Include the standard header (see existing files)
-3. Focus on testing one component or flow
-4. Provide clear test descriptions and expected outcomes
-5. Handle errors gracefully with meaningful messages
-
-### Component Architecture
-
-Tests are designed to validate the decoupled architecture:
-
-```
-User Input → Task Planner → Intent Analysis
-                ↓
-         Device Controller (if needed)
-                ↓
-         Execute Device Command
-                ↓
-         Character System → Response
-```
-
-Each component should be testable in isolation.
+All test files in this directory follow the project's testing rules:
+- Include proper path setup for importing from parent directory
+- Disable OpenTelemetry for tests
+- Use descriptive names ending in `_test.py`
+- Provide comprehensive test coverage
+- Handle configuration and network issues gracefully

@@ -3,6 +3,7 @@
 # Core AI/LLM Libraries
 anthropic>=0.25.0
 langfuse>=2.0.0
+langgraph>=0.2.0
 
 # Database
 sqlalchemy>=2.0.0
@@ -63,3 +64,6 @@ paho-mqtt>=1.6.1
 
 # Optional: Redis for caching
 redis>=5.0.0
+
+
+
