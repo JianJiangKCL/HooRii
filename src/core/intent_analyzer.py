@@ -58,23 +58,30 @@ class IntentAnalyzer:
     ) -> Dict[str, Any]:
         """Analyze user intent using LLM with optimized context"""
 
-        # Only include recent conversation for context (reduce from 5 to 2)
-        conversation_context = context.get_conversation_context_for_llm(max_turns=2)
+        # Include recent conversation for context
+        max_turns = self.config.system.max_conversation_turns
+        conversation_context = context.get_conversation_context_for_llm(max_turns=max_turns)
 
-        # Simplified, shorter prompt
+        # Enhanced prompt with better context understanding
         analysis_prompt = f"""
-用户: "{user_input}"
+当前用户输入: "{user_input}"
 
-{f"最近对话: {conversation_context}" if conversation_context else ""}
-{f"上次操作: {context.last_device_action.get('device')}" if context.last_device_action else ""}
+{f"最近对话历史: {conversation_context}" if conversation_context else ""}
+{f"上次设备操作: {context.last_device_action.get('device')}" if context.last_device_action else ""}
 
-返回JSON:
+分析要求：
+1. 理解上下文关联：如果用户说"是命令"、"执行"、"好的"等确认词，检查前面是否有未执行的设备操作请求
+2. 指代词解析：如"它"、"那个"等需要从对话历史中找到对应的设备
+3. 隐含意图：如"好热"暗示开空调，"太亮了"暗示调暗灯光
+
+返回JSON格式：
 {{
     "involves_hardware": bool,
     "device": "lights/tv/air_conditioner/speaker/curtains/null",
     "action": "turn_on/turn_off/set_brightness/null",
     "parameters": {{}},
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "context_reference": "描述如何理解上下文"
 }}
 """
         
@@ -95,16 +102,36 @@ class IntentAnalyzer:
             
             response_text = response.content[0].text.strip()
             
-            # Extract JSON
-            if response_text.startswith('{') and response_text.endswith('}'):
-                intent_json = json.loads(response_text)
-            else:
-                # Find JSON part
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                if json_match:
-                    intent_json = json.loads(json_match.group())
+            # Extract JSON with better error handling
+            try:
+                if response_text.startswith('{') and response_text.endswith('}'):
+                    intent_json = json.loads(response_text)
                 else:
-                    raise ValueError("No valid JSON found in response")
+                    # Find JSON part using more robust pattern
+                    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+                    if json_match:
+                        json_text = json_match.group()
+                        # Clean up common JSON formatting issues
+                        json_text = re.sub(r',(\s*[}\]])', r'\1', json_text)  # Remove trailing commas
+                        json_text = re.sub(r'([{,]\s*)"?(\w+)"?\s*:', r'\1"\2":', json_text)  # Quote keys
+                        intent_json = json.loads(json_text)
+                    else:
+                        raise ValueError("No valid JSON found in response")
+            except json.JSONDecodeError as json_error:
+                self.logger.warning(f"JSON parsing failed: {json_error}, response: {response_text}")
+                # Try to extract basic information manually
+                involves_hardware = any(word in response_text.lower() for word in ['true', '是', '硬件', 'hardware'])
+                device_matches = re.search(r'(lights?|tv|air_conditioner|speaker|curtains)', response_text.lower())
+                device = device_matches.group(1) if device_matches else None
+
+                intent_json = {
+                    "involves_hardware": involves_hardware,
+                    "device": device,
+                    "action": None,
+                    "parameters": {},
+                    "confidence": 0.3,
+                    "context_reference": "JSON解析失败，使用简单文本分析"
+                }
             
             # Process reference resolution if needed
             if intent_json.get("reference_resolution", {}).get("has_reference"):

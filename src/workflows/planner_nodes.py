@@ -120,7 +120,22 @@ class PlannerNodes:
 
             character_response = state.get("character_response", "")
             if not character_response:
-                return {**state, "audio_data": None}
+                return {**state, "audio_data": None, "audio_generation_result": None}
+
+            if not self.agora_tts.enabled:
+                self.logger.info("Agora TTS disabled; skipping audio generation")
+                return {
+                    **state,
+                    "audio_data": None,
+                    "audio_generation_result": {
+                        "success": False,
+                        "error": "Agora TTS disabled"
+                    },
+                    "metadata": {
+                        **state.get("metadata", {}),
+                        "audio_enabled": False
+                    }
+                }
 
             # Generate audio using Agora TTS
             audio_result = await self.tool_executor.execute_agora_tts(

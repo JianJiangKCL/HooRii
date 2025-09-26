@@ -43,25 +43,39 @@ class SystemContext:
     session_id: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
     
-    def add_conversation_turn(self, user_msg: str, assistant_msg: str):
-        """Add a conversation turn to history"""
+    def add_user_message(self, user_msg: str, max_history: int = 20):
+        """Add user message to history (called at start of processing)"""
         self.conversation_history.append({
             "role": "user",
             "content": user_msg,
             "timestamp": datetime.now().isoformat()
         })
+        self.message_count += 1
+        self.user_input = user_msg
+        
+        # Keep history size manageable (only if not unlimited)
+        if max_history > 0 and len(self.conversation_history) > max_history * 2:
+            self.conversation_history = self.conversation_history[-(max_history * 2):]
+    
+    def add_assistant_response(self, assistant_msg: str, max_history: int = 20):
+        """Add assistant response to history (called after generation)"""
         self.conversation_history.append({
             "role": "assistant", 
             "content": assistant_msg,
             "timestamp": datetime.now().isoformat()
         })
-        self.message_count += 2
+        self.message_count += 1
         self.last_response = assistant_msg
         self.response_history.append(assistant_msg)
         
-        # Keep history size manageable
-        if len(self.conversation_history) > 20:
-            self.conversation_history = self.conversation_history[-20:]
+        # Keep history size manageable (only if not unlimited)
+        if max_history > 0 and len(self.conversation_history) > max_history * 2:
+            self.conversation_history = self.conversation_history[-(max_history * 2):]
+    
+    def add_conversation_turn(self, user_msg: str, assistant_msg: str):
+        """Add a complete conversation turn to history (legacy method for compatibility)"""
+        self.add_user_message(user_msg)
+        self.add_assistant_response(assistant_msg)
             
     def update_device_state(self, device_id: str, state: Dict[str, Any]):
         """Update device state and maintain history"""
@@ -95,14 +109,38 @@ class SystemContext:
                     return intent["device"]
         return None
         
-    def get_conversation_context_for_llm(self, max_turns: int = 5) -> str:
-        """Get formatted conversation history for LLM"""
-        recent_history = self.conversation_history[-(max_turns * 2):]
+    def get_conversation_context_for_llm(self, max_turns: Optional[int] = None) -> str:
+        """Get formatted conversation history for LLM (legacy string format)"""
+        if max_turns is None:
+            # Use all available history
+            recent_history = self.conversation_history
+        elif max_turns == -1:
+            # Unlimited history
+            recent_history = self.conversation_history
+        else:
+            # Limited history
+            recent_history = self.conversation_history[-(max_turns * 2):]
+        
         formatted = []
         for msg in recent_history:
             role = "用户" if msg["role"] == "user" else "助手"
             formatted.append(f"{role}: {msg['content']}")
         return "\n".join(formatted)
+    
+    def get_conversation_messages_for_llm(self, max_turns: Optional[int] = None) -> List[Dict[str, str]]:
+        """Get conversation history in standard message format for LLM"""
+        if max_turns is None:
+            # Use all available history
+            recent_history = self.conversation_history
+        elif max_turns == -1:
+            # Unlimited history
+            recent_history = self.conversation_history
+        else:
+            # Limited history
+            recent_history = self.conversation_history[-(max_turns * 2):]
+        
+        # Only return user and assistant messages (simplified)
+        return [{"role": msg["role"], "content": msg["content"]} for msg in recent_history]
         
     def get_device_context_for_llm(self) -> str:
         """Get formatted device state for LLM"""
@@ -149,9 +187,10 @@ class SystemContext:
 class ContextManager:
     """Manages system context across components"""
     
-    def __init__(self):
+    def __init__(self, max_turns: int = 20):
         self.logger = logging.getLogger(__name__)
         self.context = SystemContext()
+        self.max_turns = max_turns
         
     def create_session(self, session_id: str) -> SystemContext:
         """Create a new session context"""

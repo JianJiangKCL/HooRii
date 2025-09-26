@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple
+from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, desc, String
 
@@ -14,6 +15,15 @@ from ..models.database import (
     DeviceInteraction, SystemSettings, DatabaseManager
 )
 from ..utils.config import Config
+
+@dataclass
+class UserInfo:
+    """Simple data class to avoid SQLAlchemy session issues"""
+    id: str
+    username: str
+    familiarity_score: int
+    last_seen: datetime
+    created_at: datetime
 
 class DatabaseService:
     """Service layer for database operations"""
@@ -28,7 +38,7 @@ class DatabaseService:
         return self.db_manager.get_session()
     
     # User Management
-    def get_or_create_user(self, user_id: str, username: str = None, **kwargs) -> User:
+    def get_or_create_user(self, user_id: str, username: str = None, **kwargs) -> UserInfo:
         """Get existing user or create new one"""
         session = self.get_session()
         try:
@@ -48,8 +58,16 @@ class DatabaseService:
                 # Update last_seen
                 user.last_seen = datetime.utcnow()
                 session.commit()
-            
-            return user
+
+            # Create UserInfo object to avoid session issues
+            user_info = UserInfo(
+                id=user.id,
+                username=user.username,
+                familiarity_score=user.familiarity_score,
+                last_seen=user.last_seen,
+                created_at=user.created_at
+            )
+            return user_info
         finally:
             session.close()
     
@@ -171,8 +189,8 @@ class DatabaseService:
             session.close()
     
     def get_conversation_history(
-        self, 
-        conversation_id: str, 
+        self,
+        conversation_id: str,
         limit: int = 10
     ) -> List[Message]:
         """Get conversation history"""
@@ -181,8 +199,27 @@ class DatabaseService:
             messages = session.query(Message).filter_by(
                 conversation_id=conversation_id
             ).order_by(desc(Message.timestamp)).limit(limit).all()
-            
+
             return list(reversed(messages))  # Return in chronological order
+        finally:
+            session.close()
+
+    def get_recent_conversations_for_user(
+        self,
+        user_id: str,
+        limit: int = 5
+    ) -> List[Conversation]:
+        """Get recent active conversations for a user"""
+        session = self.get_session()
+        try:
+            conversations = session.query(Conversation).filter(
+                and_(
+                    Conversation.user_id == user_id,
+                    Conversation.is_active == True
+                )
+            ).order_by(desc(Conversation.last_activity)).limit(limit).all()
+
+            return conversations
         finally:
             session.close()
     

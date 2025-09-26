@@ -42,6 +42,9 @@ class DeviceController:
         
         # Load system prompt
         self.system_prompt = self._load_prompt_file('prompts/device_controller.txt')
+
+        # Load familiarity requirements from config
+        self.familiarity_requirements = self._load_familiarity_requirements()
     
     def _load_prompt_file(self, filepath: str) -> str:
         """Load prompt from file"""
@@ -51,6 +54,37 @@ class DeviceController:
         except Exception as e:
             self.logger.warning(f"Failed to load prompt file {filepath}: {e}")
             return "你是智能家居设备控制系统，处理设备操作请求。"
+
+    def _load_familiarity_requirements(self) -> Dict[str, Any]:
+        """Load familiarity requirements from config file"""
+        try:
+            with open('config/familiarity_requirements.json', 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            self.logger.warning(f"Failed to load familiarity requirements: {e}")
+            # Return default requirements if file not found
+            return {
+                "device_requirements": {
+                    "air_conditioner": 60,
+                    "speaker": 40,
+                    "tv": 40,
+                    "lights": 30,
+                    "curtains": 30,
+                    "default": 50
+                },
+                "action_modifiers": {
+                    "critical_actions": {
+                        "set_temperature_high": 20,
+                        "set_volume_high": 20
+                    }
+                },
+                "tone_thresholds": {
+                    "formal": 30,
+                    "polite": 60,
+                    "casual": 80,
+                    "intimate": 100
+                }
+            }
     
     @observe(as_type="generation", name="device_controller")
     async def process_device_intent(
@@ -128,7 +162,8 @@ class DeviceController:
         """Build comprehensive prompt for device control"""
         
         # Get conversation history
-        conv_history = context.get_conversation_context_for_llm(max_turns=3)
+        max_turns = self.config.system.max_conversation_turns
+        conv_history = context.get_conversation_context_for_llm(max_turns=max_turns)
         
         # Get current device states
         device_states = context.get_device_context_for_llm()
@@ -440,20 +475,17 @@ class DeviceController:
                 "message": f"找不到设备 {device_id}"
             }
         
-        # Define familiarity requirements for different devices/actions
-        requirements = {
-            "air_conditioner": 60,  # Need higher familiarity for AC
-            "speaker": 40,
-            "tv": 40,
-            "lights": 30,  # Lower requirement for lights
-            "curtains": 30
-        }
-        
-        required_score = requirements.get(db_device.device_type, 50)
-        
+        # Use familiarity requirements from config
+        device_reqs = self.familiarity_requirements.get("device_requirements", {})
+        required_score = device_reqs.get(db_device.device_type, device_reqs.get("default", 50))
+
         # Critical actions need higher familiarity
+        action_modifiers = self.familiarity_requirements.get("action_modifiers", {}).get("critical_actions", {})
         if action in ["set_temperature", "set_volume"] and "high" in str(context.current_intent.get("parameters", {})).lower():
-            required_score += 20
+            if action == "set_temperature":
+                required_score += action_modifiers.get("set_temperature_high", 20)
+            elif action == "set_volume":
+                required_score += action_modifiers.get("set_volume_high", 20)
         
         if context.familiarity_score >= required_score:
             return {

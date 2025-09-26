@@ -1152,7 +1152,7 @@ async def control_device(request: DeviceControlRequest):
         if familiarity < config.system.min_familiarity_for_hardware:
             return DeviceControlResponse(
                 success=False,
-                error=f"熟悉度不足 (当前: {familiarity}, 需要: {config.system.min_familiarity_for_hardware})",
+                error="访问被拒绝",
                 timestamp=datetime.utcnow()
             )
         

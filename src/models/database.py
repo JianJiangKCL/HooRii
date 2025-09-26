@@ -25,6 +25,15 @@ class ConversationContext:
     cached_memories: List[Dict] = field(default_factory=list)
     device_states_cache: Dict = field(default_factory=dict)
     
+    # Additional fields for compatibility with SystemContext
+    user_input: str = ""
+    conversation_tone: str = "neutral"
+    current_intent: Optional[Dict[str, Any]] = None
+    previous_intents: List[Dict[str, Any]] = field(default_factory=list)
+    last_response: Optional[str] = None
+    device_states: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    last_device_action: Optional[Dict[str, Any]] = None
+    
     def is_expired(self, timeout_minutes: int = 30) -> bool:
         """Check if conversation has expired"""
         return datetime.now() - self.last_activity > timedelta(minutes=timeout_minutes)
@@ -33,6 +42,94 @@ class ConversationContext:
         """Update activity timestamp and message count"""
         self.last_activity = datetime.now()
         self.message_count += 1
+    
+    def add_user_message(self, user_msg: str, max_history: int = 100):
+        """Add user message to history (called at start of processing)"""
+        self.conversation_history.append({
+            "role": "user",
+            "content": user_msg,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.message_count += 1
+        self.user_input = user_msg
+        
+        # Keep history size manageable (only if not unlimited)
+        if max_history > 0 and len(self.conversation_history) > max_history * 2:
+            self.conversation_history = self.conversation_history[-(max_history * 2):]
+    
+    def add_assistant_response(self, assistant_msg: str, max_history: int = 100):
+        """Add assistant response to history (called after generation)"""
+        self.conversation_history.append({
+            "role": "assistant", 
+            "content": assistant_msg,
+            "timestamp": datetime.now().isoformat()
+        })
+        self.message_count += 1
+        self.last_response = assistant_msg
+        
+        # Keep history size manageable (only if not unlimited)
+        if max_history > 0 and len(self.conversation_history) > max_history * 2:
+            self.conversation_history = self.conversation_history[-(max_history * 2):]
+    
+    def add_conversation_turn(self, user_msg: str, assistant_msg: str):
+        """Add a complete conversation turn to history (legacy method for compatibility)"""
+        self.add_user_message(user_msg)
+        self.add_assistant_response(assistant_msg)
+    
+    def add_intent(self, intent: Dict[str, Any]):
+        """Add intent analysis result"""
+        self.current_intent = intent
+        self.previous_intents.append(intent)
+        
+        # Keep intent history size manageable
+        if len(self.previous_intents) > 10:
+            self.previous_intents = self.previous_intents[-10:]
+    
+    def get_conversation_context_for_llm(self, max_turns: Optional[int] = None) -> str:
+        """Get formatted conversation history for LLM (legacy string format)"""
+        if max_turns is None:
+            # Use all available history
+            recent_history = self.conversation_history
+        elif max_turns == -1:
+            # Unlimited history
+            recent_history = self.conversation_history
+        else:
+            # Limited history
+            recent_history = self.conversation_history[-(max_turns * 2):]
+        
+        formatted = []
+        for msg in recent_history:
+            role = "用户" if msg["role"] == "user" else "助手"
+            formatted.append(f"{role}: {msg['content']}")
+        return "\n".join(formatted)
+    
+    def get_conversation_messages_for_llm(self, max_turns: Optional[int] = None) -> List[Dict[str, str]]:
+        """Get conversation history in standard message format for LLM"""
+        if max_turns is None:
+            # Use all available history
+            recent_history = self.conversation_history
+        elif max_turns == -1:
+            # Unlimited history
+            recent_history = self.conversation_history
+        else:
+            # Limited history
+            recent_history = self.conversation_history[-(max_turns * 2):]
+        
+        # Only return user and assistant messages (simplified)
+        return [{"role": msg["role"], "content": msg["content"]} for msg in recent_history]
+    
+    def update_device_state(self, device_id: str, state: Dict[str, Any]):
+        """Update device state and maintain history"""
+        if device_id in self.device_states:
+            # Store previous state in cache as well
+            self.device_states_cache[f"{device_id}_previous"] = self.device_states[device_id].copy()
+        self.device_states[device_id] = state
+        self.device_states_cache[device_id] = state
+        self.last_device_action = {
+            "device": device_id,
+            "state": state,
+            "timestamp": datetime.now().isoformat()
+        }
 
 Base = declarative_base()
 

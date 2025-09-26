@@ -45,6 +45,11 @@ class SystemConfig:
     cleanup_interval_minutes: int = 10
     default_familiarity_score: int = 25
     min_familiarity_for_hardware: int = 40
+    
+    # Conversation context configuration
+    max_conversation_turns: int = 20  # Maximum turns to keep in memory for LLM context
+    max_history_storage: int = 100   # Maximum turns to store in database (unlimited if -1)
+    conversation_context_window: int = 8000  # Token limit for conversation context
 
 @dataclass
 class VectorSearchConfig:
@@ -142,7 +147,12 @@ class Config:
             max_active_conversations=int(os.getenv("MAX_ACTIVE_CONVERSATIONS", "1000")),
             cleanup_interval_minutes=int(os.getenv("CLEANUP_INTERVAL_MINUTES", "10")),
             default_familiarity_score=int(os.getenv("DEFAULT_FAMILIARITY_SCORE", "25")),
-            min_familiarity_for_hardware=int(os.getenv("MIN_FAMILIARITY_FOR_HARDWARE", "40"))
+            min_familiarity_for_hardware=int(os.getenv("MIN_FAMILIARITY_FOR_HARDWARE", "40")),
+            
+            # Conversation context configuration
+            max_conversation_turns=int(os.getenv("MAX_CONVERSATION_TURNS", "20")),
+            max_history_storage=int(os.getenv("MAX_HISTORY_STORAGE", "100")),
+            conversation_context_window=int(os.getenv("CONVERSATION_CONTEXT_WINDOW", "8000"))
         )
     
     def _load_vector_search_config(self) -> VectorSearchConfig:
@@ -166,11 +176,13 @@ class Config:
                 enabled=False
             )
 
+        project_id = os.getenv("AGORA_PROJECT_ID") or app_key
+
         return AgoraConfig(
             app_key=app_key,
             app_secret=app_secret,
             enabled=os.getenv("AGORA_TTS_ENABLED", "true").lower() == "true",
-            project_id=os.getenv("AGORA_PROJECT_ID", "default")
+            project_id=project_id
         )
     
     def validate(self) -> bool:
@@ -247,6 +259,11 @@ MAX_ACTIVE_CONVERSATIONS=1000
 CLEANUP_INTERVAL_MINUTES=10
 DEFAULT_FAMILIARITY_SCORE=25
 MIN_FAMILIARITY_FOR_HARDWARE=40
+
+# Conversation Context Settings
+MAX_CONVERSATION_TURNS=20         # Maximum turns to keep in LLM context
+MAX_HISTORY_STORAGE=100          # Maximum turns to store in database (-1 for unlimited)
+CONVERSATION_CONTEXT_WINDOW=8000 # Token limit for conversation context
 
 # Vector Search (Future feature)
 VECTOR_SEARCH_ENABLED=false

@@ -35,6 +35,7 @@ class AgoraTTSService:
         self.app_key = config.agora.app_key if hasattr(config, 'agora') else None
         self.app_secret = config.agora.app_secret if hasattr(config, 'agora') else None
         self.enabled = config.agora.enabled if hasattr(config, 'agora') else False
+        self.project_id = getattr(getattr(config, "agora", None), "project_id", None)
 
         # Agora TTS API endpoints
         self.base_url = "https://api.agora.io"
@@ -93,7 +94,11 @@ class AgoraTTSService:
             }
 
             body_json = json.dumps(request_body)
-            url_path = self.tts_endpoint.format("your_project_id")  # Replace with actual project ID
+            if not self.project_id or self.project_id in {"", "default", "your_project_id"}:
+                self.logger.error("Agora project ID is not configured correctly")
+                return None
+
+            url_path = self.tts_endpoint.format(self.project_id)
             full_url = self.base_url + url_path
 
             # Generate signature

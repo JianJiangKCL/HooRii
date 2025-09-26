@@ -40,9 +40,7 @@ from ..core.context_manager import ContextManager, SystemContext
 from ..core.intent_analyzer import IntentAnalyzer
 from ..core.device_controller import DeviceController
 from ..core.character_system import CharacterSystem
-from ..core.fast_processor import FastProcessor
-from ..core.minimal_processor import MinimalProcessor
-from ..core.task_planner import TaskPlanner
+from ..utils.task_planner import TaskPlanner
 from ..core.tool_executor import ToolExecutor
 from ..services.langfuse_session_manager import LangfuseSessionManager
 from ..services.agora_tts_service import AgoraTTSService
@@ -58,6 +56,8 @@ class AISystemState(TypedDict):
     intent_analysis: Optional[Dict]
     device_actions: Optional[List[Dict]]
     character_response: Optional[str]
+    audio_data: Optional[str]
+    audio_generation_result: Optional[Dict]
     final_response: Optional[str]
     error: Optional[str]
     metadata: Optional[Dict]
@@ -93,16 +93,13 @@ class LangGraphHomeAISystem:
         self.intent_analyzer = IntentAnalyzer(self.config)
         self.device_controller = DeviceController(self.config)
         self.character_system = CharacterSystem(self.config)
-        self.fast_processor = FastProcessor(self.config)
-        self.minimal_processor = MinimalProcessor(self.config)
         self.task_planner = TaskPlanner(self.config)
         self.tool_executor = ToolExecutor(self.config)
         self.agora_tts = AgoraTTSService(self.config)
         self.conversation_summary = ConversationSummaryService(self.config)
         self.session_manager = LangfuseSessionManager(self.config)
-        self.use_fast_mode = False  # Disable fast mode
-        self.use_minimal_mode = True  # Enable ultra-minimal mode for stability
-        self.use_planner_mode = False  # Disable planner mode to avoid overload
+        # Use unified task planner approach
+        self.use_unified_mode = True
 
         # Initialize LangGraph workflow
         if LANGGRAPH_AVAILABLE:
@@ -116,168 +113,86 @@ class LangGraphHomeAISystem:
         """Create the LangGraph workflow"""
         workflow = StateGraph(AISystemState)
 
-        if self.use_minimal_mode:
-            # Minimal mode: ultra-simple processing
-            workflow.add_node("minimal_process", self._minimal_process_node)
+        if self.use_unified_mode:
+            # Unified mode: Use task planner for all processing
+            workflow.add_node("task_plan", self._task_plan_node)
             workflow.add_node("execute_device_actions", self._execute_device_actions_node)
-            workflow.add_node("finalize_response", self._finalize_response_node)
-            workflow.add_node("handle_error", self._handle_error_node)
-
-            # Define edges for minimal mode
-            workflow.add_edge(START, "minimal_process")
-            workflow.add_conditional_edges(
-                "minimal_process",
-                self._should_execute_devices,
-                {
-                    "execute": "execute_device_actions",
-                    "skip": "finalize_response",
-                    "error": "handle_error"
-                }
-            )
-            workflow.add_edge("execute_device_actions", "finalize_response")
-            workflow.add_edge("finalize_response", END)
-            workflow.add_edge("handle_error", END)
-        elif self.use_fast_mode:
-            # Fast mode: single LLM call
-            workflow.add_node("fast_process", self._fast_process_node)
-            workflow.add_node("execute_device_actions", self._execute_device_actions_node)
-            workflow.add_node("finalize_response", self._finalize_response_node)
-            workflow.add_node("handle_error", self._handle_error_node)
-
-            # Define edges for fast mode
-            workflow.add_edge(START, "fast_process")
-            workflow.add_conditional_edges(
-                "fast_process",
-                self._should_execute_devices,
-                {
-                    "execute": "execute_device_actions",
-                    "skip": "finalize_response",
-                    "error": "handle_error"
-                }
-            )
-            workflow.add_edge("execute_device_actions", "finalize_response")
-            workflow.add_edge("finalize_response", END)
-            workflow.add_edge("handle_error", END)
-        elif self.use_planner_mode:
-            # Planner mode: full tool-based workflow
-            workflow.add_node("make_plan", self._make_plan_node)
-            workflow.add_node("execute_plan", self._execute_plan_node)
             workflow.add_node("generate_audio", self._generate_audio_node)
             workflow.add_node("finalize_response", self._finalize_response_node)
             workflow.add_node("handle_error", self._handle_error_node)
 
-            # Define edges for planner mode
-            workflow.add_edge(START, "make_plan")
+            # Define edges for unified mode
+            workflow.add_edge(START, "task_plan")
             workflow.add_conditional_edges(
-                "make_plan",
-                self._should_execute_plan,
+                "task_plan",
+                self._should_execute_devices,
                 {
-                    "execute": "execute_plan",
+                    "execute": "execute_device_actions",
+                    "skip": "generate_audio",
                     "error": "handle_error"
                 }
             )
-            workflow.add_conditional_edges(
-                "execute_plan",
-                self._should_generate_audio,
-                {
-                    "generate_audio": "generate_audio",
-                    "skip_audio": "finalize_response",
-                    "error": "handle_error"
-                }
-            )
+            workflow.add_edge("execute_device_actions", "generate_audio")
             workflow.add_edge("generate_audio", "finalize_response")
             workflow.add_edge("finalize_response", END)
             workflow.add_edge("handle_error", END)
         else:
-            # Original mode: separate LLM calls
-            workflow.add_node("analyze_intent", self._analyze_intent_node)
+            # Legacy mode (kept for compatibility)
+            workflow.add_node("task_plan", self._task_plan_node)
             workflow.add_node("execute_device_actions", self._execute_device_actions_node)
-            workflow.add_node("generate_character_response", self._generate_character_response_node)
+            workflow.add_node("generate_audio", self._generate_audio_node)
             workflow.add_node("finalize_response", self._finalize_response_node)
             workflow.add_node("handle_error", self._handle_error_node)
 
-            # Define edges
-            workflow.add_edge(START, "analyze_intent")
+            # Define edges for legacy mode
+            workflow.add_edge(START, "task_plan")
             workflow.add_conditional_edges(
-                "analyze_intent",
+                "task_plan",
                 self._should_execute_devices,
                 {
                     "execute": "execute_device_actions",
-                    "skip": "generate_character_response",
+                    "skip": "generate_audio",
                     "error": "handle_error"
                 }
             )
-            workflow.add_edge("execute_device_actions", "generate_character_response")
-            workflow.add_edge("generate_character_response", "finalize_response")
+            workflow.add_edge("execute_device_actions", "generate_audio")
+            workflow.add_edge("generate_audio", "finalize_response")
             workflow.add_edge("finalize_response", END)
             workflow.add_edge("handle_error", END)
 
         return workflow.compile(checkpointer=self.memory)
 
-    @observe(name="fast_process_node")
-    async def _fast_process_node(self, state: AISystemState) -> AISystemState:
-        """Fast processing node - combines intent and response"""
+    @observe(name="task_plan_node")
+    async def _task_plan_node(self, state: AISystemState) -> AISystemState:
+        """Task planning node - unified processing through task planner"""
         try:
-            self.logger.info("Starting fast processing")
+            self.logger.info("Starting task planning")
 
-            # Load context
-            context = await self._load_context(state)
-
-            # Fast process in single LLM call
-            result = await self.fast_processor.process_fast(
-                state["user_input"],
-                context
+            # Use task planner to process the request
+            response, conversation_id = await self.task_planner.process_request(
+                user_input=state["user_input"],
+                user_id=state.get("user_id", "default_user"),
+                conversation_id=state.get("session_id")
             )
+
+            # Get conversation context from task planner
+            ctx = self.task_planner.active_conversations.get(conversation_id)
 
             return {
                 **state,
-                "context": context.to_dict() if context else {},
-                "intent_analysis": result["intent_analysis"],
-                "execution_plan": result.get("execution_plan", {}),
-                "character_response": result["response"],
+                "session_id": conversation_id,
+                "context": ctx.to_dict() if ctx else {},
+                "character_response": response,
+                "intent_analysis": ctx.current_intent if ctx else {},
                 "metadata": {
-                    "fast_mode": True,
-                    "has_execution_plan": bool(result.get("execution_plan", {}).get("plan")),
+                    "unified_mode": True,
                     "timestamp": datetime.now().isoformat()
                 }
             }
 
         except Exception as e:
-            self.logger.error(f"Fast processing failed: {e}")
-            return {**state, "error": f"Fast processing failed: {str(e)}"}
-
-    @observe(name="minimal_process_node")
-    async def _minimal_process_node(self, state: AISystemState) -> AISystemState:
-        """Minimal processing node - ultra-simple processing with rate limiting"""
-        try:
-            self.logger.info("Starting minimal processing")
-
-            # Load context
-            context = await self._load_context(state)
-
-            # Minimal process with rate limiting
-            result = await self.minimal_processor.process_minimal(
-                state["user_input"],
-                context
-            )
-
-            return {
-                **state,
-                "context": context.to_dict() if context else {},
-                "intent_analysis": result["intent_analysis"],
-                "character_response": result["response"],
-                "device_actions": result.get("device_actions", []),
-                "metadata": {
-                    "minimal_mode": True,
-                    "rate_limited": True,
-                    "fallback_used": result.get("metadata", {}).get("fallback_used", False),
-                    "timestamp": datetime.now().isoformat()
-                }
-            }
-
-        except Exception as e:
-            self.logger.error(f"Minimal processing failed: {e}")
-            return {**state, "error": f"Minimal processing failed: {str(e)}"}
+            self.logger.error(f"Task planning failed: {e}")
+            return {**state, "error": f"Task planning failed: {str(e)}"}
 
     @observe(name="analyze_intent_node")
     async def _analyze_intent_node(self, state: AISystemState) -> AISystemState:
@@ -314,7 +229,9 @@ class LangGraphHomeAISystem:
             self.logger.info("Executing device actions")
 
             intent_analysis = state.get("intent_analysis", {})
-            context = self.context_manager.get_context()
+            context = await self._load_context(state)
+            if not context:
+                return {**state, "error": "Failed to load context"}
             familiarity = context.familiarity_score
 
             # Log familiarity check for devices
@@ -326,14 +243,12 @@ class LangGraphHomeAISystem:
 
                 familiarity_check = intent_analysis.get("familiarity_check", "unknown")
                 if familiarity < 40:
-                    self.logger.warning(f"Device control denied - insufficient familiarity: {familiarity} < 40")
+                    self.logger.info(f"Device control request denied due to insufficient familiarity")
                     return {
                         **state,
                         "device_actions": [{
                             "success": False,
                             "reason": "insufficient_familiarity",
-                            "required_familiarity": 40,
-                            "current_familiarity": familiarity,
                             "device": device,
                             "action": action
                         }],
@@ -382,7 +297,9 @@ class LangGraphHomeAISystem:
             self.logger.info("Generating character response")
 
             # Prepare context for character system
-            context = self.context_manager.get_context()
+            context = await self._load_context(state)
+            if not context:
+                return {**state, "error": "Failed to load context for character system"}
 
             # Update context with current state
             context.user_input = state["user_input"]
@@ -390,9 +307,18 @@ class LangGraphHomeAISystem:
                 context.current_intent = state["intent_analysis"]
 
             # Prepare response data
+            device_actions = state.get("device_actions", [])
+            
+            # Check if there are any familiarity-related rejections
+            has_familiarity_rejection = any(
+                action.get("reason") == "insufficient_familiarity" 
+                for action in device_actions
+            )
+            
             response_data = {
                 "intent_analysis": state.get("intent_analysis", {}),
-                "device_actions": state.get("device_actions", [])
+                "device_actions": device_actions,
+                "insufficient_familiarity": has_familiarity_rejection
             }
 
             # Generate character response
@@ -420,15 +346,43 @@ class LangGraphHomeAISystem:
         try:
             self.logger.info("Finalizing response")
 
-            # Create final response structure
+            # Create final response structure (filter sensitive information)
+            device_actions = state.get("device_actions", []) or []
+            # Remove sensitive familiarity information from device actions
+            filtered_device_actions = []
+            for action in device_actions if device_actions else []:
+                filtered_action = {
+                    "success": action.get("success", False),
+                    "device": action.get("device"),
+                    "action": action.get("action")
+                }
+                # Only add reason if it's not familiarity-related
+                reason = action.get("reason")
+                if reason and reason != "insufficient_familiarity":
+                    filtered_action["reason"] = reason
+                filtered_device_actions.append(filtered_action)
+            
             final_response = {
                 "response": state.get("character_response", "I apologize, but I couldn't generate a response."),
                 "intent_analysis": state.get("intent_analysis", {}),
-                "device_actions": state.get("device_actions", []),
+                "device_actions": filtered_device_actions,
+                "audio": None,
                 "session_id": state.get("session_id"),
                 "timestamp": datetime.now().isoformat(),
                 "metadata": state.get("metadata", {})
             }
+
+            audio_data = state.get("audio_data")
+            if audio_data:
+                audio_result = state.get("audio_generation_result", {}) or {}
+                final_response["audio"] = {
+                    "data": audio_data,
+                    "format": audio_result.get("format", "base64_mp3"),
+                    "voice": audio_result.get("voice", "zh-CN-XiaoxiaoNeural"),
+                    "timestamp": audio_result.get("timestamp") or datetime.now().isoformat()
+                }
+            else:
+                final_response.pop("audio", None)
 
             # Update context after successful processing
             if state.get("context") and not state.get("error"):
@@ -480,14 +434,28 @@ class LangGraphHomeAISystem:
             return "skip"
 
     async def _load_context(self, state: AISystemState) -> Optional[SystemContext]:
-        """Load system context"""
+        """Load system context with user familiarity"""
         try:
             # Create or get session context
             session_id = state.get("session_id")
+            user_id = state.get("user_id")
+            
             if session_id:
-                return self.context_manager.create_session(session_id)
+                context = self.context_manager.create_session(session_id)
             else:
-                return self.context_manager.get_context()
+                context = self.context_manager.get_context()
+            
+            # Load user familiarity from database
+            if user_id:
+                familiarity = self.db_service.get_user_familiarity(user_id)
+                context.familiarity_score = familiarity
+                self.logger.info(f"Loaded user familiarity: {familiarity}/100")
+            else:
+                # Use default familiarity for anonymous users
+                context.familiarity_score = self.config.system.default_familiarity_score
+                self.logger.info(f"Using default familiarity: {context.familiarity_score}/100")
+            
+            return context
         except Exception as e:
             self.logger.error(f"Context loading failed: {e}")
             return None
@@ -517,6 +485,8 @@ class LangGraphHomeAISystem:
             intent_analysis=None,
             device_actions=None,
             character_response=None,
+            audio_data=None,
+            audio_generation_result=None,
             final_response=None,
             error=None,
             metadata={}
@@ -682,7 +652,22 @@ class LangGraphHomeAISystem:
 
             character_response = state.get("character_response", "")
             if not character_response:
-                return {**state, "audio_data": None}
+                return {**state, "audio_data": None, "audio_generation_result": None}
+
+            if not self.agora_tts.enabled:
+                self.logger.info("Agora TTS disabled; skipping audio generation")
+                return {
+                    **state,
+                    "audio_data": None,
+                    "audio_generation_result": {
+                        "success": False,
+                        "error": "Agora TTS disabled"
+                    },
+                    "metadata": {
+                        **state.get("metadata", {}),
+                        "audio_enabled": False
+                    }
+                }
 
             # Generate audio using Agora TTS
             audio_result = await self.tool_executor.execute_agora_tts(
