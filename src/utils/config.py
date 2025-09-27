@@ -60,12 +60,14 @@ class VectorSearchConfig:
     dimension: int = 384
 
 @dataclass
-class AgoraConfig:
-    """Agora (声网) TTS configuration"""
-    app_key: str
-    app_secret: str
+class OpenAITTSConfig:
+    """OpenAI Text-to-Speech configuration"""
+    api_key: str
+    model: str = "gpt-4o-mini-tts"
+    default_voice: str = "alloy"
+    audio_format: str = "mp3"
+    base_url: str = "https://api.openai.com"
     enabled: bool = True
-    project_id: str = "default"
 
 class Config:
     """Main configuration class"""
@@ -76,7 +78,7 @@ class Config:
         self.anthropic = self._load_anthropic_config()
         self.system = self._load_system_config()
         self.vector_search = self._load_vector_search_config()
-        self.agora = self._load_agora_config()
+        self.openai_tts = self._load_openai_tts_config()
     
     def _load_database_config(self) -> DatabaseConfig:
         """Load database configuration from environment variables"""
@@ -164,25 +166,28 @@ class Config:
             dimension=int(os.getenv("VECTOR_SEARCH_DIMENSION", "384"))
         )
 
-    def _load_agora_config(self) -> AgoraConfig:
-        """Load Agora TTS configuration from environment variables"""
-        app_key = os.getenv("AGORA_APP_KEY")
-        app_secret = os.getenv("AGORA_APP_SECRET")
+    def _load_openai_tts_config(self) -> OpenAITTSConfig:
+        """Load OpenAI TTS configuration from environment variables"""
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GPT_TTS_API_KEY")
 
-        if not app_key or not app_secret:
-            return AgoraConfig(
-                app_key="",
-                app_secret="",
+        if not api_key:
+            return OpenAITTSConfig(
+                api_key="",
                 enabled=False
             )
 
-        project_id = os.getenv("AGORA_PROJECT_ID") or app_key
+        model = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+        voice = os.getenv("OPENAI_TTS_VOICE", "alloy")
+        audio_format = os.getenv("OPENAI_TTS_FORMAT", "mp3")
+        base_url = os.getenv("OPENAI_API_BASE", "https://api.openai.com").rstrip("/") or "https://api.openai.com"
 
-        return AgoraConfig(
-            app_key=app_key,
-            app_secret=app_secret,
-            enabled=os.getenv("AGORA_TTS_ENABLED", "true").lower() == "true",
-            project_id=project_id
+        return OpenAITTSConfig(
+            api_key=api_key,
+            model=model,
+            default_voice=voice,
+            audio_format=audio_format,
+            base_url=base_url,
+            enabled=os.getenv("OPENAI_TTS_ENABLED", "true").lower() == "true"
         )
     
     def validate(self) -> bool:
@@ -212,7 +217,7 @@ class Config:
         print(f"  Anthropic Model: {self.anthropic.model}")
         print(f"  Debug Mode: {self.system.debug}")
         print(f"  Vector Search: {'✅ Enabled' if self.vector_search.enabled else '❌ Disabled'}")
-        print(f"  Agora TTS: {'✅ Enabled' if self.agora.enabled else '❌ Disabled'}")
+        print(f"  OpenAI TTS: {'✅ Enabled' if self.openai_tts.enabled else '❌ Disabled'}")
 
 def load_config() -> Config:
     """Load and validate configuration"""
@@ -271,11 +276,12 @@ VECTOR_SEARCH_PROVIDER=sentence_transformers
 VECTOR_SEARCH_MODEL=all-MiniLM-L6-v2
 VECTOR_SEARCH_DIMENSION=384
 
-# Agora (声网) TTS API
-AGORA_APP_KEY=your_agora_app_key
-AGORA_APP_SECRET=your_agora_app_secret
-AGORA_TTS_ENABLED=true
-AGORA_PROJECT_ID=default
+# OpenAI TTS (GPT-4o-mini-tts)
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_TTS_MODEL=gpt-4o-mini-tts
+OPENAI_TTS_VOICE=alloy
+OPENAI_TTS_FORMAT=mp3
+OPENAI_TTS_ENABLED=true
 """
     
     env_file = Path(".env.template")

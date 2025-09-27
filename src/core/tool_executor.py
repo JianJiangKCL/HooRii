@@ -38,6 +38,14 @@ class ToolExecutor:
         self.intent_analyzer = IntentAnalyzer(config)
         self.device_controller = DeviceController(config)
         self.agora_tts = AgoraTTSService(config)
+        self.tts_default_voice = (
+            getattr(getattr(config, "openai_tts", None), "default_voice", None)
+            or getattr(self.agora_tts, "default_voice", None)
+        )
+        self.tts_format = (
+            getattr(getattr(config, "openai_tts", None), "audio_format", "mp3")
+            or getattr(self.agora_tts, "audio_format", "mp3")
+        )
         self.database = DatabaseService(config)
 
     @observe(name="familiarity_check_tool")
@@ -121,23 +129,30 @@ class ToolExecutor:
     async def execute_agora_tts(
         self,
         text: str,
-        voice: str = "zh-CN-XiaoxiaoNeural"
+        voice: str = None
     ) -> Dict[str, Any]:
         """执行声网TTS工具"""
 
         try:
-            self.logger.info(f"Executing Agora TTS for text: {text[:50]}...")
+            self.logger.info(f"Executing OpenAI TTS for text: {text[:50]}...")
 
-            # Call Agora TTS service
-            audio_base64 = await self.agora_tts.text_to_speech(text)
+            voice_choice = voice or self.tts_default_voice
+            resolved_voice = self.agora_tts._resolve_voice(voice_choice)  # noqa: SLF001 - using service helper
+
+            # Call TTS service
+            audio_base64 = await self.agora_tts.text_to_speech(
+                text,
+                voice=resolved_voice,
+                audio_format=self.tts_format
+            )
 
             if audio_base64:
                 result = {
                     "success": True,
                     "audio_data": audio_base64,
                     "text": text,
-                    "voice": voice,
-                    "format": "base64_mp3",
+                    "voice": resolved_voice,
+                    "format": f"base64_{self.tts_format or 'mp3'}",
                     "timestamp": datetime.now().isoformat()
                 }
             else:
@@ -145,15 +160,15 @@ class ToolExecutor:
                     "success": False,
                     "error": "TTS synthesis failed",
                     "text": text,
-                    "voice": voice,
+                    "voice": resolved_voice,
                     "timestamp": datetime.now().isoformat()
                 }
 
-            self.logger.info(f"Agora TTS result: {'success' if result['success'] else 'failed'}")
+            self.logger.info(f"OpenAI TTS result: {'success' if result['success'] else 'failed'}")
             return result
 
         except Exception as e:
-            self.logger.error(f"Agora TTS error: {e}")
+            self.logger.error(f"OpenAI TTS error: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -266,7 +281,7 @@ class ToolExecutor:
             elif tool_name == "agora_tts":
                 return await self.execute_agora_tts(
                     parameters.get("text"),
-                    parameters.get("voice", "zh-CN-XiaoxiaoNeural")
+                    parameters.get("voice")
                 )
 
             elif tool_name == "context_summary":

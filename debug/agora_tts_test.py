@@ -80,7 +80,7 @@ async def test_agora_tts_signature_generation():
         # Test signature generation
         method = "POST"
         url = "/v1/projects/test/tts-tasks"
-        body = '{"text": "Hello world", "voice": "zh-CN-XiaoxiaoNeural"}'
+        body = '{"text": "Hello world", "voice": "alloy"}'
         
         headers = tts_service._generate_signature(method, url, body)
         
@@ -134,7 +134,7 @@ async def test_agora_tts_synthesis():
         # Test synthesize_speech method (returns bytes)
         audio_data = await tts_service.synthesize_speech(
             text=test_text,
-            voice="zh-CN-XiaoxiaoNeural",
+            voice="alloy",
             format="mp3"
         )
         
@@ -144,7 +144,7 @@ async def test_agora_tts_synthesis():
             print(f"   - Audio type: {type(audio_data)}")
             
             # Test text_to_speech method (returns base64 string)
-            base64_audio = await tts_service.text_to_speech(test_text)
+            base64_audio = await tts_service.text_to_speech(test_text, voice="alloy")
             if base64_audio:
                 print(f"✅ Base64 encoding successful!")
                 print(f"   - Base64 length: {len(base64_audio)} characters")

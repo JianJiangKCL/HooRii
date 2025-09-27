@@ -49,7 +49,7 @@ class TaskPlanner:
                 "returns": "device_control_result"
             },
             "agora_tts": {
-                "description": "将文本转换为语音输出",
+                "description": "将文本转换为语音输出 (OpenAI GPT-4o-mini-tts)",
                 "parameters": ["text", "voice"],
                 "returns": "audio_data"
             },

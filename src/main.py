@@ -52,6 +52,8 @@ async def main():
 
                 if isinstance(response, dict):
                     print(f"\n🤖 Assistant: {response.get('response', 'No response')}")
+                    # Persist session so conversation stays connected across turns
+                    session_id = response.get('session_id', session_id)
                 else:
                     print(f"\n🤖 Assistant: {response}")
             else:
@@ -62,6 +64,13 @@ async def main():
                     session_id=session_id
                 )
                 print(f"\n🤖 Assistant: {response}")
+
+                # The traditional workflow manages its own session state, but we keep the
+                # identifier returned by the context manager so subsequent turns reuse it.
+                if getattr(system, 'context_manager', None):
+                    current_context = getattr(system.context_manager, 'context', None)
+                    if current_context and getattr(current_context, 'session_id', None):
+                        session_id = current_context.session_id
 
     except KeyboardInterrupt:
         print("\n\n👋 Goodbye!")

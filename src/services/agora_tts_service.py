@@ -1,167 +1,164 @@
 #!/usr/bin/env python3
 """
-Agora (声网) TTS Service
-Text-to-Speech using Agora REST API
+Text-to-Speech service (OpenAI GPT-4o-mini-tts)
+
+Maintains the legacy class name `AgoraTTSService` for backwards compatibility,
+but internally uses OpenAI's GPT-4o-mini-tts endpoint to synthesize speech.
 """
-import asyncio
-import json
-import logging
 import base64
-import hashlib
-import hmac
-import time
-from typing import Optional, Dict, Any
+import logging
+from typing import Optional
+
 import aiohttp
 
 try:
     from langfuse import observe
     LANGFUSE_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - optional dependency
     LANGFUSE_AVAILABLE = False
+
     def observe(*args, **kwargs):
         def decorator(func):
             return func
+
         return decorator
 
 from ..utils.config import Config
 
 
 class AgoraTTSService:
-    """Agora Text-to-Speech service"""
+    """Wrapper around OpenAI GPT-4o-mini-tts REST API."""
 
     def __init__(self, config: Config):
-        self.config = config
         self.logger = logging.getLogger(__name__)
-        self.app_key = config.agora.app_key if hasattr(config, 'agora') else None
-        self.app_secret = config.agora.app_secret if hasattr(config, 'agora') else None
-        self.enabled = config.agora.enabled if hasattr(config, 'agora') else False
-        self.project_id = getattr(getattr(config, "agora", None), "project_id", None)
 
-        # Agora TTS API endpoints
-        self.base_url = "https://api.agora.io"
-        self.tts_endpoint = "/v1/projects/{}/tts-tasks"
+        tts_cfg = getattr(config, "openai_tts", None)
+        self.enabled = getattr(tts_cfg, "enabled", False)
+        self.api_key = getattr(tts_cfg, "api_key", None)
+        self.model = getattr(tts_cfg, "model", "gpt-4o-mini-tts")
+        base_url = getattr(tts_cfg, "base_url", "https://api.openai.com") or "https://api.openai.com"
+        self.base_url = base_url.rstrip("/")
 
-    def _generate_signature(self, method: str, url: str, body: str = "") -> Dict[str, str]:
-        """Generate Agora API signature"""
-        timestamp = str(int(time.time()))
-        nonce = str(int(time.time() * 1000))
+        self.allowed_voices = {
+            "alloy",
+            "echo",
+            "fable",
+            "onyx",
+            "nova",
+            "shimmer",
+            "coral",
+            "verse",
+            "ballad",
+            "ash",
+            "sage",
+            "marin",
+            "cedar",
+        }
+        self.voice_aliases = {
+            "zh-cn-xiaoxiaoneural": "alloy",
+            "zh-cn-xiaoyineural": "alloy",
+            "azure-alloy": "alloy",
+            "female": "nova",
+            "male": "onyx",
+        }
+        configured_voice = getattr(tts_cfg, "default_voice", "alloy")
+        self.default_voice = self._resolve_voice(configured_voice, fallback="alloy")
+        self.audio_format = getattr(tts_cfg, "audio_format", "mp3") or "mp3"
 
-        # Create signature string
-        sig_string = f"{method}\n{url}\n{body}\n{self.app_key}\n{timestamp}\n{nonce}"
+    def _resolve_voice(self, voice: Optional[str], fallback: Optional[str] = None) -> str:
+        fallback = (fallback or self.default_voice or "alloy").strip().lower()
+        candidate = (voice or fallback or "alloy").strip().lower()
 
-        # Generate HMAC-SHA256 signature
-        signature = base64.b64encode(
-            hmac.new(
-                self.app_secret.encode(),
-                sig_string.encode(),
-                hashlib.sha256
-            ).digest()
-        ).decode()
+        mapped = self.voice_aliases.get(candidate)
+        if mapped:
+            return mapped
 
+        if candidate in self.allowed_voices:
+            return candidate
+
+        if fallback in self.allowed_voices:
+            self.logger.warning(f"Voice '{voice}' not supported. Falling back to '{fallback}'.")
+            return fallback
+
+        self.logger.warning(f"Voice '{voice}' not supported. Falling back to 'alloy'.")
+        return "alloy"
+
+    def _build_request_payload(self, text: str, voice: Optional[str], audio_format: Optional[str]) -> dict:
         return {
-            "X-Agora-Key": self.app_key,
-            "X-Agora-Timestamp": timestamp,
-            "X-Agora-Nonce": nonce,
-            "X-Agora-Signature": signature,
+            "model": self.model,
+            "input": text,
+            "voice": self._resolve_voice(voice),
+            "format": audio_format or self.audio_format
+        }
+
+    def _headers(self) -> dict:
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
+        return {
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
-    @observe(name="agora_tts_synthesis")
+    async def _post_tts(self, payload: dict) -> Optional[bytes]:
+        url = f"{self.base_url}/v1/audio/speech"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=60)) as response:
+                if response.status >= 400:
+                    error_text = await response.text()
+                    self.logger.error(f"OpenAI TTS request failed ({response.status}): {error_text}")
+                    return None
+
+                audio_bytes = await response.read()
+                if not audio_bytes:
+                    self.logger.error("OpenAI TTS response did not contain audio data")
+                    return None
+
+                return audio_bytes
+
+    @observe(name="openai_tts_synthesis")
     async def synthesize_speech(
         self,
         text: str,
-        voice: str = "zh-CN-XiaoxiaoNeural",
-        format: str = "mp3"
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None
     ) -> Optional[bytes]:
-        """Convert text to speech using Agora TTS"""
+        """Convert text to speech using OpenAI GPT-4o-mini-tts."""
 
-        if not self.enabled or not self.app_key or not self.app_secret:
-            self.logger.warning("Agora TTS not configured or disabled")
+        if not self.enabled:
+            self.logger.info("OpenAI TTS disabled; skipping synthesis")
+            return None
+
+        if not text:
             return None
 
         try:
-            self.logger.info(f"Starting TTS synthesis for text: {text[:50]}...")
+            payload = self._build_request_payload(text, voice, audio_format)
+            audio_bytes = await self._post_tts(payload)
+            if audio_bytes:
+                self.logger.debug(f"OpenAI TTS produced {len(audio_bytes)} bytes")
+            return audio_bytes
+        except Exception as exc:  # pragma: no cover - network interaction
+            self.logger.error(f"OpenAI TTS synthesis error: {exc}")
+            return None
 
-            # Prepare request body
-            request_body = {
-                "text": text,
-                "voice": voice,
-                "format": format,
-                "sample_rate": 16000,
-                "speed": 1.0,
-                "pitch": 0,
-                "volume": 100
-            }
-
-            body_json = json.dumps(request_body)
-            if not self.project_id or self.project_id in {"", "default", "your_project_id"}:
-                self.logger.error("Agora project ID is not configured correctly")
-                return None
-
-            url_path = self.tts_endpoint.format(self.project_id)
-            full_url = self.base_url + url_path
-
-            # Generate signature
-            headers = self._generate_signature("POST", url_path, body_json)
-
-            # Make API request
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    full_url,
-                    headers=headers,
-                    data=body_json,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-
-                    if response.status == 200:
-                        result = await response.json()
-
-                        # Check if synthesis was successful
-                        if result.get("code") == 200:
-                            # Get audio data
-                            audio_url = result.get("data", {}).get("audio_url")
-                            if audio_url:
-                                # Download audio
-                                async with session.get(audio_url) as audio_response:
-                                    if audio_response.status == 200:
-                                        audio_data = await audio_response.read()
-                                        self.logger.info(f"TTS synthesis successful, audio size: {len(audio_data)} bytes")
-                                        return audio_data
-                                    else:
-                                        self.logger.error(f"Failed to download audio: {audio_response.status}")
-                            else:
-                                self.logger.error("No audio URL in response")
-                        else:
-                            self.logger.error(f"TTS synthesis failed: {result}")
-                    else:
-                        error_text = await response.text()
-                        self.logger.error(f"Agora API error {response.status}: {error_text}")
-
-        except Exception as e:
-            self.logger.error(f"TTS synthesis error: {e}")
-
+    @observe(name="openai_tts_simple")
+    async def text_to_speech(self, text: str, voice: Optional[str] = None, audio_format: Optional[str] = None) -> Optional[str]:
+        audio_bytes = await self.synthesize_speech(text, voice=voice, audio_format=audio_format)
+        if audio_bytes:
+            return base64.b64encode(audio_bytes).decode()
         return None
 
-    @observe(name="agora_tts_simple")
-    async def text_to_speech(self, text: str) -> Optional[str]:
-        """Simple text to speech - returns base64 encoded audio"""
+    async def save_audio_file(self, text: str, filepath: str, voice: Optional[str] = None, audio_format: Optional[str] = None) -> bool:
+        audio_bytes = await self.synthesize_speech(text, voice=voice, audio_format=audio_format)
+        if not audio_bytes:
+            return False
 
-        audio_data = await self.synthesize_speech(text)
-        if audio_data:
-            # Return base64 encoded audio for easy transmission
-            return base64.b64encode(audio_data).decode()
-        return None
-
-    async def save_audio_file(self, text: str, filepath: str) -> bool:
-        """Save TTS audio to file"""
-
-        audio_data = await self.synthesize_speech(text)
-        if audio_data:
-            try:
-                with open(filepath, 'wb') as f:
-                    f.write(audio_data)
-                self.logger.info(f"Audio saved to {filepath}")
-                return True
-            except Exception as e:
-                self.logger.error(f"Failed to save audio file: {e}")
-        return False
+        try:
+            with open(filepath, "wb") as handle:
+                handle.write(audio_bytes)
+            self.logger.info(f"Saved OpenAI TTS audio to {filepath}")
+            return True
+        except Exception as exc:  # pragma: no cover - file IO
+            self.logger.error(f"Failed to save OpenAI TTS audio: {exc}")
+            return False
