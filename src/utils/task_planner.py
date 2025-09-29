@@ -206,40 +206,94 @@ class TaskPlanner:
                 user_input,
                 conversation_ctx
             )
-            
+
+            device_result = None
+            response = None
+            min_familiarity = getattr(self.config.system, "min_familiarity_for_hardware", 40)
+
             # Step 2: Execute based on intent
             if intent.get("involves_hardware", False):
-                # Device control flow - let Device Controller process
-                device_result = await self.device_controller.process_device_intent(
-                    intent=intent,
-                    context=conversation_ctx
-                )
-                
-                # Update context with device result
-                conversation_ctx.current_intent.update({
-                    "device_result": device_result
-                })
-                response = await self.character_system.generate_response(
-                    context=conversation_ctx,
-                    response_data={"device_result": device_result}
-                )
+                intent["familiarity_check"] = "passed"
+
+                if conversation_ctx.familiarity_score < min_familiarity:
+                    intent["familiarity_check"] = "failed"
+                    device_result = {
+                        "success": False,
+                        "reason": "insufficient_familiarity",
+                        "required_familiarity": min_familiarity,
+                        "current_familiarity": conversation_ctx.familiarity_score,
+                        "device": intent.get("device"),
+                        "action": intent.get("action"),
+                    }
+                    conversation_ctx.current_intent.update({
+                        "device_result": device_result,
+                        "familiarity_check": "failed"
+                    })
+                    response = await self.character_system.generate_response(
+                        context=conversation_ctx,
+                        response_data={
+                            "device_result": device_result,
+                            "insufficient_familiarity": True
+                        }
+                    )
+                else:
+                    conversation_ctx.current_intent.update({
+                        "familiarity_check": "passed"
+                    })
+
+                    device_task = asyncio.create_task(
+                        self.device_controller.process_device_intent(
+                            intent=intent,
+                            context=conversation_ctx
+                        )
+                    )
+
+                    async def generate_character_response():
+                        nonlocal device_result
+                        device_result = await device_task
+                        conversation_ctx.current_intent.update({
+                            "device_result": device_result
+                        })
+                        return await self.character_system.generate_response(
+                            context=conversation_ctx,
+                            response_data={"device_result": device_result}
+                        )
+
+                    response = await asyncio.gather(
+                        device_task,
+                        generate_character_response(),
+                        return_exceptions=False
+                    )
+                    # gather returns [device_result, response]
+                    device_result, response = response
                 
             elif intent.get("requires_status", False):
                 # Status query flow - let Device Controller process
-                device_result = await self.device_controller.process_device_intent(
-                    intent=intent,
-                    context=conversation_ctx
+                async def run_status_flow():
+                    status_result = await self.device_controller.process_device_intent(
+                        intent=intent,
+                        context=conversation_ctx
+                    )
+                    conversation_ctx.current_intent.update({
+                        "status_result": status_result
+                    })
+                    return status_result
+
+                status_task = asyncio.create_task(run_status_flow())
+
+                async def status_character_response():
+                    status_result = await status_task
+                    return await self.character_system.generate_response(
+                        context=conversation_ctx,
+                        response_data={"status_result": status_result}
+                    )
+
+                _, response = await asyncio.gather(
+                    status_task,
+                    status_character_response(),
+                    return_exceptions=False
                 )
-                
-                # Update context with status result
-                conversation_ctx.current_intent.update({
-                    "status_result": device_result
-                })
-                response = await self.character_system.generate_response(
-                    context=conversation_ctx,
-                    response_data={"status_result": device_result}
-                )
-                
+
             elif intent.get("requires_memory", False):
                 # Memory retrieval flow
                 memories = await self._retrieve_memory(
