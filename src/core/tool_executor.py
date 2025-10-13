@@ -38,12 +38,14 @@ class ToolExecutor:
         self.intent_analyzer = IntentAnalyzer(config)
         self.device_controller = DeviceController(config)
         self.agora_tts = AgoraTTSService(config)
+        tts_selection = getattr(config, "tts", None)
+        self.tts_provider = getattr(tts_selection, "provider", "openai")
         self.tts_default_voice = (
-            getattr(getattr(config, "openai_tts", None), "default_voice", None)
+            getattr(tts_selection, "default_voice", None)
             or getattr(self.agora_tts, "default_voice", None)
         )
         self.tts_format = (
-            getattr(getattr(config, "openai_tts", None), "audio_format", "mp3")
+            getattr(tts_selection, "audio_format", "mp3")
             or getattr(self.agora_tts, "audio_format", "mp3")
         )
         self.database = DatabaseService(config)
@@ -134,7 +136,8 @@ class ToolExecutor:
         """执行声网TTS工具"""
 
         try:
-            self.logger.info(f"Executing OpenAI TTS for text: {text[:50]}...")
+            provider_label = (self.tts_provider or "tts").title()
+            self.logger.info(f"Executing {provider_label} TTS for text: {text[:50]}...")
 
             voice_choice = voice or self.tts_default_voice
             resolved_voice = self.agora_tts._resolve_voice(voice_choice)  # noqa: SLF001 - using service helper
@@ -164,11 +167,11 @@ class ToolExecutor:
                     "timestamp": datetime.now().isoformat()
                 }
 
-            self.logger.info(f"OpenAI TTS result: {'success' if result['success'] else 'failed'}")
+            self.logger.info(f"{provider_label} TTS result: {'success' if result['success'] else 'failed'}")
             return result
 
         except Exception as e:
-            self.logger.error(f"OpenAI TTS error: {e}")
+            self.logger.error(f"{(self.tts_provider or 'tts').title()} TTS error: {e}")
             return {
                 "success": False,
                 "error": str(e),

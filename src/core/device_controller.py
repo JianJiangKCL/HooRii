@@ -9,8 +9,6 @@ import logging
 import re
 from typing import Dict, Any, Optional, List
 
-import anthropic
-
 # Try to import Langfuse components
 try:
     from langfuse import observe
@@ -23,6 +21,7 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config
+from ..utils.llm_client import create_llm_client
 from ..services.database_service import DatabaseService
 from .context_manager import SystemContext
 
@@ -34,11 +33,7 @@ class DeviceController:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.db_service = DatabaseService(config)
-        self.claude_client = anthropic.Anthropic(
-            api_key=config.anthropic.api_key,
-            max_retries=3,
-            timeout=30.0
-        )
+        self.llm_client = create_llm_client(config)
         
         # Load system prompt
         self.system_prompt = self._load_prompt_file('prompts/device_controller.txt')
@@ -106,16 +101,15 @@ class DeviceController:
         
         try:
             # Use LLM to understand and process the request
-            response = await asyncio.to_thread(
-                self.claude_client.messages.create,
-                model=self.config.anthropic.model,
+            messages = [{"role": "user", "content": device_prompt}]
+            
+            response_text = await self.llm_client.generate(
+                system_prompt=self.system_prompt,
+                messages=messages,
                 max_tokens=1000,
-                temperature=0.3,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": device_prompt}]
+                temperature=0.3
             )
             
-            response_text = response.content[0].text.strip()
             result = self._parse_json_response(response_text)
             
             # Execute the action if it's a control command

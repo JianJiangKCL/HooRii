@@ -9,8 +9,6 @@ import logging
 import re
 from typing import Dict, Any, Optional
 
-import anthropic
-
 # Try to import Langfuse components
 try:
     from langfuse import observe
@@ -23,6 +21,7 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config
+from ..utils.llm_client import create_llm_client
 from .context_manager import SystemContext
 
 
@@ -32,11 +31,7 @@ class IntentAnalyzer:
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.claude_client = anthropic.Anthropic(
-            api_key=config.anthropic.api_key,
-            max_retries=3,
-            timeout=30.0
-        )
+        self.llm_client = create_llm_client(config)
         
         # Load system prompt
         self.system_prompt = self._load_prompt_file('prompts/intent_analyzer.txt')
@@ -86,21 +81,16 @@ class IntentAnalyzer:
 """
         
         try:
-            # Use prompt caching for system prompt to save tokens
-            response = await asyncio.to_thread(
-                self.claude_client.messages.create,
-                model=self.config.anthropic.model,
-                max_tokens=200,  # Reduced from 800
-                temperature=0.1,  # Lower temperature for faster, more consistent analysis
-                system=[{
-                    "type": "text",
-                    "text": "你是智能家居意图分析器。分析用户输入，返回JSON格式的设备控制意图。",
-                    "cache_control": {"type": "ephemeral"}  # Cache the system prompt
-                }],
-                messages=[{"role": "user", "content": analysis_prompt}]
-            )
+            # Generate intent analysis using LLM client
+            system_prompt_text = "你是智能家居意图分析器。分析用户输入，返回JSON格式的设备控制意图。"
+            messages = [{"role": "user", "content": analysis_prompt}]
             
-            response_text = response.content[0].text.strip()
+            response_text = await self.llm_client.generate(
+                system_prompt=system_prompt_text,
+                messages=messages,
+                max_tokens=200,  # Reduced from 800
+                temperature=0.1  # Lower temperature for faster, more consistent analysis
+            )
             
             # Extract JSON with better error handling
             try:
