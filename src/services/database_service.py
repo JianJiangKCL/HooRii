@@ -847,3 +847,253 @@ class DatabaseService:
             session.close()
         
         return results
+   # User Device Management
+    def get_user_devices(self, user_id: str, active_only: bool = True) -> List:
+        """Get all devices for a user"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            query = session.query(UserDevice).filter_by(user_id=user_id)
+            if active_only:
+                query = query.filter_by(is_accessible=True)
+            user_devices = query.all()
+            # Convert to dicts to avoid session issues
+            result = []
+            for ud in user_devices:
+                result.append(ud)
+            return result
+        finally:
+            session.close()
+
+    def get_user_device(self, user_id: str, device_id: str):
+        """Get a specific user device configuration"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            return session.query(UserDevice).filter_by(
+                user_id=user_id, 
+                device_id=device_id
+            ).first()
+        finally:
+            session.close()
+
+    def add_user_device(
+        self, 
+        user_id: str, 
+        device_id: str,
+        custom_name: str = None,
+        is_favorite: bool = False,
+        is_accessible: bool = True,
+        min_familiarity_required: int = None,
+        custom_permissions: Dict = None,
+        allowed_actions: List[str] = None,
+        user_preferences: Dict = None,
+        quick_actions: List[str] = None
+    ):
+        """Add a device to user's device list"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            # Check if already exists
+            existing = session.query(UserDevice).filter_by(
+                user_id=user_id,
+                device_id=device_id
+            ).first()
+            
+            if existing:
+                return None
+            
+            user_device = UserDevice(
+                user_id=user_id,
+                device_id=device_id,
+                custom_name=custom_name,
+                is_favorite=is_favorite,
+                is_accessible=is_accessible,
+                min_familiarity_required=min_familiarity_required,
+                custom_permissions=custom_permissions or {},
+                allowed_actions=allowed_actions or [],
+                user_preferences=user_preferences or {},
+                quick_actions=quick_actions or []
+            )
+            
+            session.add(user_device)
+            session.commit()
+            session.refresh(user_device)
+            return user_device
+        except Exception as e:
+            session.rollback()
+            print(f"Error adding user device: {e}")
+            return None
+        finally:
+            session.close()
+
+    def update_user_device(self, user_id: str, device_id: str, **updates) -> bool:
+        """Update user device configuration"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            user_device = session.query(UserDevice).filter_by(
+                user_id=user_id,
+                device_id=device_id
+            ).first()
+            
+            if not user_device:
+                return False
+            
+            # Update allowed fields
+            allowed_fields = ['custom_name', 'is_favorite', 'is_accessible', 
+                            'min_familiarity_required', 'custom_permissions',
+                            'allowed_actions', 'user_preferences', 'quick_actions']
+            for field, value in updates.items():
+                if field in allowed_fields and value is not None:
+                    setattr(user_device, field, value)
+            
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error updating user device: {e}")
+            return False
+        finally:
+            session.close()
+
+    def remove_user_device(self, user_id: str, device_id: str) -> bool:
+        """Remove a device from user's device list"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            user_device = session.query(UserDevice).filter_by(
+                user_id=user_id,
+                device_id=device_id
+            ).first()
+            
+            if not user_device:
+                return False
+            
+            session.delete(user_device)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"Error removing user device: {e}")
+            return False
+        finally:
+            session.close()
+
+    def get_user_favorite_devices(self, user_id: str):
+        """Get user's favorite devices"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            user_devices = session.query(UserDevice).filter_by(
+                user_id=user_id,
+                is_favorite=True,
+                is_accessible=True
+            ).all()
+            result = []
+            for ud in user_devices:
+                result.append(ud)
+            return result
+        finally:
+            session.close()
+
+    def import_user_devices(
+        self, 
+        user_id: str, 
+        devices_data: List[Dict],
+        overwrite_existing: bool = False
+    ) -> Dict[str, Any]:
+        """Bulk import user devices configuration"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        results = {"imported": 0, "updated": 0, "errors": [], "devices": []}
+        
+        try:
+            for device_data in devices_data:
+                try:
+                    device_id = device_data.get('device_id')
+                    if not device_id:
+                        results["errors"].append("Missing device_id in device data")
+                        continue
+                    
+                    existing = session.query(UserDevice).filter_by(
+                        user_id=user_id,
+                        device_id=device_id
+                    ).first()
+                    
+                    if existing and not overwrite_existing:
+                        results["errors"].append(f"User device {device_id} already exists, skipped")
+                        continue
+                    
+                    if existing and overwrite_existing:
+                        # Update existing
+                        for key, value in device_data.items():
+                            if key != 'device_id' and hasattr(existing, key):
+                                setattr(existing, key, value)
+                        results["updated"] += 1
+                        results["devices"].append(device_id)
+                    else:
+                        # Create new
+                        user_device = UserDevice(
+                            user_id=user_id,
+                            device_id=device_id,
+                            custom_name=device_data.get('custom_name'),
+                            is_favorite=device_data.get('is_favorite', False),
+                            is_accessible=device_data.get('is_accessible', True),
+                            min_familiarity_required=device_data.get('min_familiarity_required'),
+                            custom_permissions=device_data.get('custom_permissions', {}),
+                            allowed_actions=device_data.get('allowed_actions', []),
+                            user_preferences=device_data.get('user_preferences', {}),
+                            quick_actions=device_data.get('quick_actions', [])
+                        )
+                        session.add(user_device)
+                        results["imported"] += 1
+                        results["devices"].append(device_id)
+                        
+                except Exception as e:
+                    results["errors"].append(f"Error processing device {device_data.get('device_id', 'unknown')}: {e}")
+            
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            results["errors"].append(f"Bulk import failed: {e}")
+        finally:
+            session.close()
+        
+        return results
+
+    def export_user_devices(self, user_id: str) -> Dict[str, Any]:
+        """Export user devices configuration"""
+        from ..models.database import UserDevice
+        session = self.get_session()
+        try:
+            user_devices = session.query(UserDevice).filter_by(user_id=user_id).all()
+            
+            devices_data = []
+            for ud in user_devices:
+                device_dict = {
+                    "device_id": ud.device_id,
+                    "custom_name": ud.custom_name,
+                    "is_favorite": ud.is_favorite,
+                    "is_accessible": ud.is_accessible,
+                    "min_familiarity_required": ud.min_familiarity_required,
+                    "custom_permissions": ud.custom_permissions or {},
+                    "allowed_actions": ud.allowed_actions or [],
+                    "user_preferences": ud.user_preferences or {},
+                    "quick_actions": ud.quick_actions or [],
+                    "added_at": ud.added_at.isoformat() if ud.added_at else None,
+                    "last_used": ud.last_used.isoformat() if ud.last_used else None,
+                    "usage_count": ud.usage_count or 0
+                }
+                devices_data.append(device_dict)
+            
+            return {
+                "user_id": user_id,
+                "devices": devices_data,
+                "export_info": {
+                    "total_count": len(devices_data),
+                    "export_time": datetime.utcnow().isoformat()
+                }
+            }
+        finally:
+            session.close()

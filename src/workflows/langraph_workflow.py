@@ -35,11 +35,13 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config, load_config
+from ..utils.audio_cache import save_base64_mp3_to_cache, try_upload_temp_cloud, make_absolute_url
 from ..services.database_service import DatabaseService
 from ..core.context_manager import ContextManager, SystemContext
 from ..core.intent_analyzer import IntentAnalyzer
 from ..core.device_controller import DeviceController
 from ..core.character_system import CharacterSystem
+from ..core.unified_responder import UnifiedResponder
 from ..utils.task_planner import TaskPlanner
 from ..core.tool_executor import ToolExecutor
 from ..services.langfuse_session_manager import LangfuseSessionManager
@@ -58,6 +60,8 @@ class AISystemState(TypedDict):
     character_response: Optional[str]
     audio_data: Optional[str]
     audio_generation_result: Optional[Dict]
+    cached_audio_url: Optional[str]
+    cloud_audio_url: Optional[str]
     final_response: Optional[str]
     error: Optional[str]
     metadata: Optional[Dict]
@@ -93,13 +97,15 @@ class LangGraphHomeAISystem:
         self.intent_analyzer = IntentAnalyzer(self.config)
         self.device_controller = DeviceController(self.config)
         self.character_system = CharacterSystem(self.config)
+        self.unified_responder = UnifiedResponder(self.config)  # NEW: Unified responder for optimization
         self.task_planner = TaskPlanner(self.config)
         self.tool_executor = ToolExecutor(self.config)
         self.agora_tts = AgoraTTSService(self.config)
         self.conversation_summary = ConversationSummaryService(self.config)
         self.session_manager = LangfuseSessionManager(self.config)
-        # Use unified task planner approach
+        # Use unified task planner approach with optimized responder
         self.use_unified_mode = True
+        self.use_optimized_responder = True  # NEW: Enable optimized single-call response
 
         # Initialize LangGraph workflow
         if LANGGRAPH_AVAILABLE:
@@ -118,6 +124,7 @@ class LangGraphHomeAISystem:
             workflow.add_node("task_plan", self._task_plan_node)
             workflow.add_node("execute_device_actions", self._execute_device_actions_node)
             workflow.add_node("generate_audio", self._generate_audio_node)
+            workflow.add_node("cache_audio", self._cache_audio_node)
             workflow.add_node("finalize_response", self._finalize_response_node)
             workflow.add_node("handle_error", self._handle_error_node)
 
@@ -133,7 +140,8 @@ class LangGraphHomeAISystem:
                 }
             )
             workflow.add_edge("execute_device_actions", "generate_audio")
-            workflow.add_edge("generate_audio", "finalize_response")
+            workflow.add_edge("generate_audio", "cache_audio")
+            workflow.add_edge("cache_audio", "finalize_response")
             workflow.add_edge("finalize_response", END)
             workflow.add_edge("handle_error", END)
         else:
@@ -141,6 +149,7 @@ class LangGraphHomeAISystem:
             workflow.add_node("task_plan", self._task_plan_node)
             workflow.add_node("execute_device_actions", self._execute_device_actions_node)
             workflow.add_node("generate_audio", self._generate_audio_node)
+            workflow.add_node("cache_audio", self._cache_audio_node)
             workflow.add_node("finalize_response", self._finalize_response_node)
             workflow.add_node("handle_error", self._handle_error_node)
 
@@ -156,7 +165,8 @@ class LangGraphHomeAISystem:
                 }
             )
             workflow.add_edge("execute_device_actions", "generate_audio")
-            workflow.add_edge("generate_audio", "finalize_response")
+            workflow.add_edge("generate_audio", "cache_audio")
+            workflow.add_edge("cache_audio", "finalize_response")
             workflow.add_edge("finalize_response", END)
             workflow.add_edge("handle_error", END)
 
@@ -164,31 +174,79 @@ class LangGraphHomeAISystem:
 
     @observe(name="task_plan_node")
     async def _task_plan_node(self, state: AISystemState) -> AISystemState:
-        """Task planning node - unified processing through task planner"""
+        """Task planning node - unified processing with optimized single-call response"""
         try:
-            self.logger.info("Starting task planning")
-
-            # Use task planner to process the request
-            response, conversation_id = await self.task_planner.process_request(
-                user_input=state["user_input"],
-                user_id=state.get("user_id", "default_user"),
-                conversation_id=state.get("session_id")
-            )
-
-            # Get conversation context from task planner
-            ctx = self.task_planner.active_conversations.get(conversation_id)
-
-            return {
-                **state,
-                "session_id": conversation_id,
-                "context": ctx.to_dict() if ctx else {},
-                "character_response": response,
-                "intent_analysis": ctx.current_intent if ctx else {},
-                "metadata": {
-                    "unified_mode": True,
-                    "timestamp": datetime.now().isoformat()
+            user_id = state.get("user_id", "default_user")
+            session_id = state.get("session_id")
+            user_input = state["user_input"]
+            
+            # Load context
+            context = await self._load_context(state)
+            if not context:
+                return {**state, "error": "Failed to load context"}
+            
+            if self.use_optimized_responder:
+                # OPTIMIZED PATH: Single API call for intent + response (50% faster!)
+                self.logger.info("🚀 Using optimized single-call response generation")
+                
+                # Use UnifiedResponder for single API call
+                # Record user message into conversation history
+                try:
+                    context.add_user_message(user_input, max_history=self.config.system.max_conversation_turns)
+                except Exception:
+                    pass
+                unified_result = await self.unified_responder.process_and_respond(
+                    user_input=user_input,
+                    context=context
+                )
+                
+                if not unified_result.get("success"):
+                    return {**state, "error": unified_result.get("error", "Unified response failed")}
+                
+                intent = unified_result["intent"]
+                response = unified_result["response"]
+                # Append assistant response into conversation history
+                try:
+                    context.add_assistant_response(response, max_history=self.config.system.max_conversation_turns)
+                except Exception:
+                    pass
+                
+                return {
+                    **state,
+                    "session_id": session_id or str(uuid.uuid4()),
+                    "context": context.to_dict(),
+                    "character_response": response,
+                    "intent_analysis": intent,
+                    "metadata": {
+                        "optimized_mode": True,
+                        "api_calls": 1,
+                        "timestamp": datetime.now().isoformat()
+                    }
                 }
-            }
+            else:
+                # TRADITIONAL PATH: Use task planner (2 API calls)
+                self.logger.info("Using traditional task planner")
+                
+                response, conversation_id = await self.task_planner.process_request(
+                    user_input=user_input,
+                    user_id=user_id,
+                    conversation_id=session_id
+                )
+                
+                # Get conversation context from task planner
+                ctx = self.task_planner.active_conversations.get(conversation_id)
+                
+                return {
+                    **state,
+                    "session_id": conversation_id,
+                    "context": ctx.to_dict() if ctx else {},
+                    "character_response": response,
+                    "intent_analysis": ctx.current_intent if ctx else {},
+                    "metadata": {
+                        "unified_mode": True,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                }
 
         except Exception as e:
             self.logger.error(f"Task planning failed: {e}")
@@ -362,11 +420,20 @@ class LangGraphHomeAISystem:
                     filtered_action["reason"] = reason
                 filtered_device_actions.append(filtered_action)
             
+            base_response_text = state.get("character_response", "I apologize, but I couldn't generate a response.")
+
+            preferred_url = state.get("cloud_audio_url") or state.get("cached_audio_url")
+            if preferred_url:
+                response_text = f"{base_response_text}\n\n音频链接: {preferred_url}"
+            else:
+                response_text = base_response_text
+
             final_response = {
-                "response": state.get("character_response", "I apologize, but I couldn't generate a response."),
+                "response": response_text,
                 "intent_analysis": state.get("intent_analysis", {}),
                 "device_actions": filtered_device_actions,
                 "audio": None,
+                "audio_url": preferred_url,
                 "session_id": state.get("session_id"),
                 "timestamp": datetime.now().isoformat(),
                 "metadata": state.get("metadata", {})
@@ -375,10 +442,11 @@ class LangGraphHomeAISystem:
             audio_data = state.get("audio_data")
             if audio_data:
                 audio_result = state.get("audio_generation_result", {}) or {}
+                voice_value = audio_result.get("voice") or getattr(self.agora_tts, "default_voice", None)
                 final_response["audio"] = {
                     "data": audio_data,
                     "format": audio_result.get("format", "base64_mp3"),
-                    "voice": audio_result.get("voice", "zh-CN-XiaoxiaoNeural"),
+                    "voice": voice_value,
                     "timestamp": audio_result.get("timestamp") or datetime.now().isoformat()
                 }
             else:
@@ -434,16 +502,19 @@ class LangGraphHomeAISystem:
             return "skip"
 
     async def _load_context(self, state: AISystemState) -> Optional[SystemContext]:
-        """Load system context with user familiarity"""
+        """Load system context with user familiarity (reuse session if exists)."""
         try:
-            # Create or get session context
             session_id = state.get("session_id")
             user_id = state.get("user_id")
-            
+
+            current = self.context_manager.get_context()
             if session_id:
-                context = self.context_manager.create_session(session_id)
+                if not current.session_id or current.session_id != session_id:
+                    context = self.context_manager.create_session(session_id)
+                else:
+                    context = current
             else:
-                context = self.context_manager.get_context()
+                context = current
             
             # Load user familiarity from database
             if user_id:
@@ -487,6 +558,8 @@ class LangGraphHomeAISystem:
             character_response=None,
             audio_data=None,
             audio_generation_result=None,
+            cached_audio_url=None,
+            cloud_audio_url=None,
             final_response=None,
             error=None,
             metadata={}
@@ -655,13 +728,13 @@ class LangGraphHomeAISystem:
                 return {**state, "audio_data": None, "audio_generation_result": None}
 
             if not self.agora_tts.enabled:
-                self.logger.info("Agora TTS disabled; skipping audio generation")
+                self.logger.info("TTS disabled; skipping audio generation")
                 return {
                     **state,
                     "audio_data": None,
                     "audio_generation_result": {
                         "success": False,
-                        "error": "Agora TTS disabled"
+                        "error": "TTS disabled"
                     },
                     "metadata": {
                         **state.get("metadata", {}),
@@ -669,10 +742,10 @@ class LangGraphHomeAISystem:
                     }
                 }
 
-            # Generate audio using Agora TTS
+            # Generate audio using TTS service
             audio_result = await self.tool_executor.execute_agora_tts(
                 character_response,
-                voice="zh-CN-XiaoxiaoNeural"
+                voice=None
             )
 
             return {
@@ -689,6 +762,49 @@ class LangGraphHomeAISystem:
         except Exception as e:
             self.logger.error(f"Audio generation failed: {e}")
             return {**state, "error": f"Audio generation failed: {str(e)}"}
+
+    @observe(name="cache_audio_node")
+    async def _cache_audio_node(self, state: AISystemState) -> AISystemState:
+        """Cache audio to disk and optionally upload to temporary cloud, producing shareable URLs."""
+        try:
+            audio_b64 = state.get("audio_data")
+            if not audio_b64:
+                return {**state, "cached_audio_url": None, "cloud_audio_url": None}
+
+            hint = (state.get("session_id") or "speech")
+            _, local_url = save_base64_mp3_to_cache(audio_b64, filename_hint=hint)
+
+            cloud_url = None
+            try:
+                from pathlib import Path
+                from urllib.parse import unquote
+                from ..utils.audio_cache import CACHE_DIR
+                fname = unquote(local_url.rsplit("/", 1)[-1])
+                abs_path = str(Path(CACHE_DIR) / fname)
+                preferred_host = None
+                try:
+                    # Use configured temp upload host if enabled
+                    if self.config.system.temp_upload_enabled:
+                        preferred_host = self.config.system.temp_upload_host
+                except Exception:
+                    preferred_host = None
+                cloud_url = try_upload_temp_cloud(abs_path, preferred_host=preferred_host)
+            except Exception:
+                cloud_url = None
+
+            # If no cloud URL, try composing an absolute local URL if PUBLIC_BASE_URL is set
+            if not cloud_url:
+                try:
+                    absolute_local = make_absolute_url(local_url, getattr(self.config.system, 'public_base_url', None))
+                except Exception:
+                    absolute_local = None
+            else:
+                absolute_local = None
+
+            return {**state, "cached_audio_url": absolute_local or local_url, "cloud_audio_url": cloud_url}
+        except Exception as e:
+            self.logger.error(f"Audio caching failed: {e}")
+            return {**state, "cached_audio_url": None, "cloud_audio_url": None}
 
     def _should_execute_plan(self, state: AISystemState) -> str:
         """Conditional edge for plan execution"""

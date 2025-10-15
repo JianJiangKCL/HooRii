@@ -42,10 +42,15 @@ def main():
     
     # Start server
     print("\n🌐 启动API服务器...")
-    print("API文档将在 http://localhost:8000/docs 可用")
+    print("API文档将在 http://localhost:10030/docs 可用")
     print("按 Ctrl+C 停止服务器")
     
-    os.system("uvicorn src.api.server:app --host 0.0.0.0 --port 8000 --reload")
+    # Use configured API port if available (fallback to 10030)
+    try:
+        port = getattr(config.system, 'api_port', 10030)
+    except Exception:
+        port = 10030
+    os.system(f"uvicorn src.api.server:app --host 0.0.0.0 --port {port} --reload")
 
 if __name__ == "__main__":
     main()

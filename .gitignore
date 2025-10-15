@@ -6,3 +6,12 @@ setup_env.py
 *.jsonl
 *.db
 2025-01-13-performance-optimization-update.md
+
+# ElevenLabs TTS output
+debug/tts_output/*.mp3
+debug/tts_output_*/
+*.mp3
+
+# Ignore local env backups
+.env.env.backup
+*.env.backup

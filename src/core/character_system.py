@@ -9,8 +9,6 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 
-import anthropic
-
 # Try to import Langfuse components
 try:
     from langfuse import observe
@@ -23,6 +21,7 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config
+from ..utils.llm_client import create_llm_client
 from .context_manager import SystemContext
 
 
@@ -32,11 +31,7 @@ class CharacterSystem:
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.claude_client = anthropic.Anthropic(
-            api_key=config.anthropic.api_key,
-            max_retries=3,
-            timeout=30.0
-        )
+        self.llm_client = create_llm_client(config)
         
         # Load character prompt
         self.character_prompt = self._load_prompt_file('prompts/character.txt')
@@ -83,21 +78,13 @@ class CharacterSystem:
                 if context_content:
                     messages.append({"role": "user", "content": context_content})
             
-            # Use prompt caching for the character system prompt to save tokens
-            response = await asyncio.to_thread(
-                self.claude_client.messages.create,
-                model=self.config.anthropic.model,
+            # Generate response using LLM client
+            character_response = await self.llm_client.generate(
+                system_prompt=system_prompt,
+                messages=messages,
                 max_tokens=150,  # Reduced from 1000 for faster responses
-                temperature=0.5,  # Lower temperature for faster generation
-                system=[{
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"}  # Cache the character system prompt
-                }],
-                messages=messages
+                temperature=0.5  # Lower temperature for faster generation
             )
-            
-            character_response = response.content[0].text
             
             # Log character response metadata (captured by @observe decorator)  
             response_type = self._determine_response_type(context, response_data)

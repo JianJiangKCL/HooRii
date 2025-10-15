@@ -8,7 +8,7 @@
 可用工具:
 - familiarity_check: 检查用户权限
 - device_control: 控制设备
-- agora_tts: 生成语音
+- agora_tts (OpenAI GPT-4o-mini-tts): 生成语音
 
 核心能力：
 1. 理解自然语言的多样性表达

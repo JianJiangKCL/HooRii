@@ -1,0 +1,16 @@
+INFO:     Will watch for changes in these directories: ['/data/jj/proj/hoorii']
+INFO:     Uvicorn running on http://0.0.0.0:10020 (Press CTRL+C to quit)
+INFO:     Started reloader process [3278942] using StatReload
+INFO:     Started server process [3278947]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+✅ LangGraph available
+✅ Langfuse SDK available for LangGraph
+✅ Langfuse available
+✅ LangGraph workflow available
+✓ Loaded ElevenLabs config from config/elevenlabs_config.json
+🔗 Using LangGraph Workflow (with Optimized Response Generation)
+🚀 API server started successfully
+   🔗 LangGraph workflow with optimized response generation
+   ⚡ ~50% faster with single API call for intent+response
+INFO:     127.0.0.1:33222 - "GET /analytics/system HTTP/1.1" 500 Internal Server Error

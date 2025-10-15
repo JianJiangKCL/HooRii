@@ -7,9 +7,8 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Dict, Any, Optional, List
-
-import anthropic
 
 # Try to import Langfuse components
 try:
@@ -23,6 +22,7 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config
+from ..utils.llm_client import create_llm_client
 from ..services.database_service import DatabaseService
 from .context_manager import SystemContext
 
@@ -34,15 +34,14 @@ class DeviceController:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.db_service = DatabaseService(config)
-        self.claude_client = anthropic.Anthropic(
-            api_key=config.anthropic.api_key,
-            max_retries=3,
-            timeout=30.0
-        )
+        self.llm_client = create_llm_client(config)
         
         # Load system prompt
         self.system_prompt = self._load_prompt_file('prompts/device_controller.txt')
 
+        # Load device specifications from config
+        self.device_specs = self._load_device_specifications()
+        
         # Load familiarity requirements from config
         self.familiarity_requirements = self._load_familiarity_requirements()
     
@@ -55,6 +54,17 @@ class DeviceController:
             self.logger.warning(f"Failed to load prompt file {filepath}: {e}")
             return "你是智能家居设备控制系统，处理设备操作请求。"
 
+    def _load_device_specifications(self) -> Dict[str, Any]:
+        """Load device specifications from config file"""
+        try:
+            with open('config/device_specifications.json', 'r', encoding='utf-8') as f:
+                specs = json.load(f)
+                self.logger.info(f"Loaded device specifications: {len(specs.get('devices', {}))} device types")
+                return specs
+        except Exception as e:
+            self.logger.warning(f"Failed to load device specifications: {e}")
+            return {"devices": {}, "command_output_format": {}}
+    
     def _load_familiarity_requirements(self) -> Dict[str, Any]:
         """Load familiarity requirements from config file"""
         try:
@@ -70,6 +80,8 @@ class DeviceController:
                     "tv": 40,
                     "lights": 30,
                     "curtains": 30,
+                    "dimmable_light": 30,
+                    "curtain": 30,
                     "default": 50
                 },
                 "action_modifiers": {
@@ -85,6 +97,21 @@ class DeviceController:
                     "intimate": 100
                 }
             }
+    
+    def _get_device_spec(self, device_type: str) -> Optional[Dict[str, Any]]:
+        """Get device specification by device type"""
+        devices = self.device_specs.get("devices", {})
+        
+        # Try direct match first
+        if device_type in devices:
+            return devices[device_type]
+        
+        # Try to match by device_type_id
+        for device_name, spec in devices.items():
+            if spec.get("device_type_id") == device_type:
+                return spec
+        
+        return None
     
     @observe(as_type="generation", name="device_controller")
     async def process_device_intent(
@@ -106,16 +133,15 @@ class DeviceController:
         
         try:
             # Use LLM to understand and process the request
-            response = await asyncio.to_thread(
-                self.claude_client.messages.create,
-                model=self.config.anthropic.model,
+            messages = [{"role": "user", "content": device_prompt}]
+            
+            response_text = await self.llm_client.generate(
+                system_prompt=self.system_prompt,
+                messages=messages,
                 max_tokens=1000,
-                temperature=0.3,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": device_prompt}]
+                temperature=0.3
             )
             
-            response_text = response.content[0].text.strip()
             result = self._parse_json_response(response_text)
             
             # Execute the action if it's a control command
@@ -201,11 +227,15 @@ class DeviceController:
     "action_type": "control/query/none",  // 操作类型
     "device_id": "具体设备ID",  // 目标设备
     "device_name": "设备名称",
-    "command": "具体命令",  // 如turn_on, turn_off, set_brightness等
+    "command": "具体命令",  // 如turn_on, turn_off, set_brightness, set_hue, set_saturation, set_color, set_position, open_curtain, close_curtain等
     "parameters": {{  // 命令参数
-        "brightness": number,
-        "temperature": number,
-        "volume": number
+        "brightness": number,  // 亮度 0-100
+        "hue": number,  // 色值 0-360 (红0/橙30/黄60/绿120/青180/蓝240/紫270/品红300/紫红330)
+        "saturation": number,  // 饱和度 0-100
+        "temperature": number,  // 温度 16-30
+        "volume": number,  // 音量 0-100
+        "targetPosition": number,  // 窗帘位置 0-100 (0=关闭, 100=完全打开)
+        "position": number  // 通用位置参数
     }},
     "query_devices": ["device_id1", "device_id2"],  // 查询的设备列表
     "reasoning": "决策理由",  // 解释为什么这样操作
@@ -225,17 +255,40 @@ class DeviceController:
         device_context = {}
         
         for device in devices:
+            # Get device spec from configuration
+            device_spec = self._get_device_spec(device.device_type)
+            
+            # Build capabilities based on spec
+            capabilities = {}
+            if device_spec:
+                parameters = device_spec.get("parameters", {})
+                capabilities = {
+                    "can_dim": "brightness" in parameters,
+                    "has_temperature": "temperature" in parameters,
+                    "has_volume": "volume" in parameters,
+                    "has_color": "hue" in parameters and "saturation" in parameters,
+                    "has_position": "targetPosition" in parameters,
+                    "supported_commands": device_spec.get("supported_commands", []),
+                    "category": device_spec.get("category", "unknown")
+                }
+            else:
+                # Fallback for devices without spec
+                capabilities = {
+                    "can_dim": device.device_type in ["light", "dimmable_light", "57D56F4D-3302-41F7-AB34-5365AA180E81"],
+                    "has_temperature": device.device_type == "air_conditioner",
+                    "has_volume": device.device_type == "speaker",
+                    "has_color": device.device_type in ["dimmable_light", "57D56F4D-3302-41F7-AB34-5365AA180E81"],
+                    "has_position": device.device_type in ["curtain", "2FB9EE1F-1C21-4D0B-9383-9B65F64DBF0E"]
+                }
+            
             device_context[device.id] = {
                 "name": device.name,
                 "type": device.device_type,
                 "room": device.room,
                 "current_state": device.current_state,
                 "supported_actions": device.supported_actions,
-                "capabilities": {
-                    "can_dim": device.device_type == "light",
-                    "has_temperature": device.device_type == "air_conditioner",
-                    "has_volume": device.device_type == "speaker"
-                }
+                "capabilities": capabilities,
+                "spec": device_spec  # Include full spec for reference
             }
         
         return device_context
@@ -288,18 +341,43 @@ class DeviceController:
             new_state = db_device.current_state.copy()
             
             if command == "turn_on":
+                new_state["isOn"] = True
                 new_state["status"] = "on"
                 # Apply default parameters if available
-                if db_device.device_type == "light" and "brightness" not in new_state:
-                    new_state["brightness"] = 100
+                if db_device.device_type in ["light", "57D56F4D-3302-41F7-AB34-5365AA180E81"]:
+                    if "brightness" not in new_state:
+                        new_state["brightness"] = 100
                     
             elif command == "turn_off":
+                new_state["isOn"] = False
                 new_state["status"] = "off"
                 
             elif command == "set_brightness":
                 brightness = parameters.get("brightness", 50)
                 new_state["brightness"] = max(0, min(100, brightness))
+                new_state["isOn"] = True
                 new_state["status"] = "on"  # Turn on if setting brightness
+                
+            elif command == "set_hue":
+                hue = parameters.get("hue", 0)
+                new_state["hue"] = max(0, min(360, hue))
+                new_state["isOn"] = True
+                new_state["status"] = "on"  # Turn on if setting color
+                
+            elif command == "set_saturation":
+                saturation = parameters.get("saturation", 50)
+                new_state["saturation"] = max(0, min(100, saturation))
+                new_state["isOn"] = True
+                new_state["status"] = "on"  # Turn on if setting saturation
+                
+            elif command == "set_color":
+                # Set both hue and saturation
+                if "hue" in parameters:
+                    new_state["hue"] = max(0, min(360, parameters["hue"]))
+                if "saturation" in parameters:
+                    new_state["saturation"] = max(0, min(100, parameters["saturation"]))
+                new_state["isOn"] = True
+                new_state["status"] = "on"
                 
             elif command == "set_temperature":
                 temperature = parameters.get("temperature", 24)
@@ -310,6 +388,26 @@ class DeviceController:
                 volume = parameters.get("volume", 50)
                 new_state["volume"] = max(0, min(100, volume))
                 new_state["status"] = "on"  # Turn on if setting volume
+                
+            elif command == "set_position" or command == "set_curtain_position":
+                # For curtains - set targetPosition
+                target_position = parameters.get("targetPosition", parameters.get("position", 0))
+                new_state["targetPosition"] = max(0, min(100, target_position))
+                new_state["currentPosition"] = new_state["targetPosition"]  # Simulate immediate movement
+                new_state["isOn"] = new_state["targetPosition"] > 0
+                new_state["status"] = "on" if new_state["targetPosition"] > 0 else "off"
+                
+            elif command == "open_curtain":
+                new_state["targetPosition"] = 100
+                new_state["currentPosition"] = 100
+                new_state["isOn"] = True
+                new_state["status"] = "on"
+                
+            elif command == "close_curtain":
+                new_state["targetPosition"] = 0
+                new_state["currentPosition"] = 0
+                new_state["isOn"] = False
+                new_state["status"] = "off"
                 
             else:
                 # Generic parameter update
@@ -330,12 +428,25 @@ class DeviceController:
                 conversation_id=context.session_id
             )
             
+            # Build standard device control JSON output
+            control_output = {
+                "device_id": device_id,
+                "device_name": db_device.name,
+                "device_type": db_device.device_type,
+                "command": command,
+                "parameters": new_state,  # All current parameters
+                "timestamp": datetime.now().isoformat(),
+                "user_id": context.session_id if context else None,
+                "familiarity_score": context.familiarity_score if context else None
+            }
+            
             return {
                 "success": True,
                 "device_id": device_id,
                 "device_name": db_device.name,
                 "command": command,
                 "new_state": new_state,
+                "control_output": control_output,  # Standard JSON format for external systems
                 "message": f"{db_device.name} {self._get_action_description(command, parameters, new_state)}"
             }
             
@@ -405,35 +516,104 @@ class DeviceController:
         elif command == "set_brightness":
             brightness = new_state.get("brightness", 0)
             return f"亮度已调整到 {brightness}%"
+        elif command == "set_hue":
+            hue = new_state.get("hue", 0)
+            color_name = self._get_color_name_from_hue(hue)
+            return f"色值已设置为 {hue}° ({color_name})"
+        elif command == "set_saturation":
+            saturation = new_state.get("saturation", 50)
+            return f"饱和度已设置为 {saturation}%"
+        elif command == "set_color":
+            hue = new_state.get("hue", 0)
+            saturation = new_state.get("saturation", 50)
+            color_name = self._get_color_name_from_hue(hue)
+            return f"颜色已设置为 {color_name} (色值: {hue}°, 饱和度: {saturation}%)"
         elif command == "set_temperature":
             temperature = new_state.get("temperature", 24)
             return f"温度已设置为 {temperature}°C"
         elif command == "set_volume":
             volume = new_state.get("volume", 50)
             return f"音量已设置为 {volume}%"
+        elif command in ["set_position", "set_curtain_position"]:
+            position = new_state.get("targetPosition", 0)
+            return f"位置已设置为 {position}%"
+        elif command == "open_curtain":
+            return "窗帘已完全打开"
+        elif command == "close_curtain":
+            return "窗帘已完全关闭"
         else:
             return "操作已完成"
+    
+    def _get_color_name_from_hue(self, hue: int) -> str:
+        """Convert hue value to color name in Chinese"""
+        if 0 <= hue < 15 or 345 <= hue <= 360:
+            return "红色"
+        elif 15 <= hue < 45:
+            return "橙色"
+        elif 45 <= hue < 75:
+            return "黄色"
+        elif 75 <= hue < 105:
+            return "黄绿"
+        elif 105 <= hue < 135:
+            return "绿色"
+        elif 135 <= hue < 165:
+            return "青绿"
+        elif 165 <= hue < 195:
+            return "青色"
+        elif 195 <= hue < 225:
+            return "靛蓝"
+        elif 225 <= hue < 255:
+            return "蓝色"
+        elif 255 <= hue < 285:
+            return "紫色"
+        elif 285 <= hue < 315:
+            return "品红"
+        elif 315 <= hue < 345:
+            return "紫红"
+        else:
+            return "未知颜色"
     
     def _get_status_description(self, device) -> str:
         """Generate human-readable status description"""
         state = device.current_state
-        status = state.get("status", "unknown")
+        is_on = state.get("isOn", state.get("status") == "on")
         
-        if status == "off":
+        if not is_on:
             return f"{device.name}已关闭"
-        elif status == "on":
+        else:
             desc = f"{device.name}已开启"
             
-            if device.device_type == "light" and "brightness" in state:
-                desc += f"，亮度{state['brightness']}%"
+            # Light with color support (dimmable light)
+            if device.device_type in ["light", "57D56F4D-3302-41F7-AB34-5365AA180E81"]:
+                if "brightness" in state:
+                    desc += f"，亮度{state['brightness']}%"
+                if "hue" in state and "saturation" in state:
+                    color_name = self._get_color_name_from_hue(state['hue'])
+                    desc += f"，颜色{color_name}(色值{state['hue']}°，饱和度{state['saturation']}%)"
+                elif "hue" in state:
+                    color_name = self._get_color_name_from_hue(state['hue'])
+                    desc += f"，颜色{color_name}(色值{state['hue']}°)"
+                    
+            # Curtain
+            elif device.device_type in ["curtain", "2FB9EE1F-1C21-4D0B-9383-9B65F64DBF0E"]:
+                if "currentPosition" in state:
+                    desc = f"{device.name}位置{state['currentPosition']}%"
+                    if state['currentPosition'] == 0:
+                        desc = f"{device.name}已关闭"
+                    elif state['currentPosition'] == 100:
+                        desc = f"{device.name}已完全打开"
+                elif "targetPosition" in state:
+                    desc = f"{device.name}目标位置{state['targetPosition']}%"
+                    
+            # Air conditioner
             elif device.device_type == "air_conditioner" and "temperature" in state:
                 desc += f"，温度{state['temperature']}°C"
+                
+            # Speaker
             elif device.device_type == "speaker" and "volume" in state:
                 desc += f"，音量{state['volume']}%"
                 
             return desc
-        else:
-            return f"{device.name}状态未知"
     
     def _generate_status_summary(self, status_info: Dict[str, Any]) -> str:
         """Generate summary of device statuses"""

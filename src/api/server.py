@@ -7,13 +7,15 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Query, Body
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import uvicorn
 
 from ..utils.config import load_config, Config
-from ..workflows.traditional_workflow import HomeAITaskPlanner, create_ai_system
+from ..workflows import create_ai_system
+from ..workflows.langraph_workflow import LangGraphHomeAISystem
 from ..services.database_service import DatabaseService
 from ..models.database import User, Conversation, Device
 
@@ -23,6 +25,13 @@ app = FastAPI(
     description="智能陪伴家居控制系统 API",
     version="1.0.0"
 )
+# Serve cached audio files under /cached_audio
+import os
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CACHED_AUDIO_DIR = _REPO_ROOT / "cached_audio"
+_CACHED_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/cached_audio", StaticFiles(directory=str(_CACHED_AUDIO_DIR)), name="cached_audio")
 
 # CORS configuration
 app.add_middleware(
@@ -38,7 +47,7 @@ security = HTTPBearer(auto_error=False)
 
 # Global instances (initialized on startup)
 config: Config = None
-planner: HomeAITaskPlanner = None
+ai_system: LangGraphHomeAISystem = None  # Using LangGraph with optimized response generation
 db_service: DatabaseService = None
 
 # Pydantic models for API
@@ -85,7 +94,7 @@ class UserUpdateRequest(BaseModel):
     username: Optional[str] = Field(None, min_length=1, max_length=80)
     email: Optional[str] = None
     familiarity_score: Optional[int] = Field(None, ge=0, le=100)
-    preferred_tone: Optional[str] = Field(None, regex="^(formal|polite|casual|intimate)$")
+    preferred_tone: Optional[str] = Field(None, pattern="^(formal|polite|casual|intimate)$")
     preferences: Optional[Dict] = None
     is_active: Optional[bool] = None
 
@@ -159,13 +168,15 @@ class UserDeviceImportRequest(BaseModel):
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup():
-    global config, planner, db_service
+    global config, ai_system, db_service
     try:
         config = load_config()
-        # Try to use LangGraph workflow, fallback to traditional
-        planner = await create_ai_system(config, use_langgraph=True)
-        db_service = planner.db_service
+        # Use LangGraph with optimized response generation (50% faster)
+        ai_system = await create_ai_system(config, use_langgraph=True)
+        db_service = ai_system.db_service
         print("🚀 API server started successfully")
+        print("   🔗 LangGraph workflow with optimized response generation")
+        print("   ⚡ ~50% faster with single API call for intent+response")
     except Exception as e:
         print(f"❌ Failed to initialize API server: {e}")
         raise
@@ -920,36 +931,43 @@ async def export_user_devices(user_id: str):
 # Chat endpoints
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Process chat message"""
+    """Process chat message using LangGraph with optimized response generation"""
     start_time = time.time()
     
     try:
-        # Process the request using the main planner
-        response, conversation_id = await planner.process_request(
+        # Process the request using LangGraph
+        result = await ai_system.process_message(
             user_input=request.message,
             user_id=request.user_id,
-            conversation_id=request.conversation_id
+            session_id=request.conversation_id
         )
         
         processing_time = (time.time() - start_time) * 1000
         
-        # Get conversation context for response
-        conversation_ctx = planner.active_conversations.get(conversation_id)
-        familiarity_score = conversation_ctx.familiarity_score if conversation_ctx else 25
-        message_count = conversation_ctx.message_count if conversation_ctx else 1
+        # Extract response and session info from result
+        if isinstance(result, dict):
+            response_text = result.get("response", result.get("final_response", "No response"))
+            session_id = result.get("session_id", request.conversation_id)
+        else:
+            response_text = str(result)
+            session_id = request.conversation_id
         
-        # Save message to database
-        db_service.save_message(
-            conversation_id=conversation_id,
-            user_input=request.message,
-            assistant_response=response,
-            tone_used=conversation_ctx.tone if conversation_ctx else "polite",
-            processing_time_ms=processing_time
+        # Get familiarity score from database
+        familiarity_score = db_service.get_user_familiarity(request.user_id)
+        
+        # Get or create conversation
+        conversation = db_service.get_or_create_conversation(
+            user_id=request.user_id,
+            conversation_id=session_id
         )
         
+        # Get message count
+        messages = db_service.get_conversation_history(conversation.id, limit=1000)
+        message_count = len(messages)
+        
         return ChatResponse(
-            response=response,
-            conversation_id=conversation_id,
+            response=response_text,
+            conversation_id=conversation.id,
             user_id=request.user_id,
             familiarity_score=familiarity_score,
             message_count=message_count,
@@ -979,9 +997,6 @@ async def end_conversation(conversation_id: str):
     try:
         success = db_service.end_conversation(conversation_id)
         if success:
-            # Also remove from memory cache
-            if conversation_id in planner.active_conversations:
-                del planner.active_conversations[conversation_id]
             return {"success": True, "message": f"对话 {conversation_id} 已结束"}
         else:
             raise HTTPException(status_code=404, detail="对话不存在")
@@ -1156,11 +1171,26 @@ async def control_device(request: DeviceControlRequest):
                 timestamp=datetime.utcnow()
             )
         
+        # Execute device control using device controller
+        from ..core.context_manager import SystemContext
+        
+        # Create minimal context for device control
+        context = SystemContext(
+            user_input=f"控制设备: {request.device_id}",
+            familiarity_score=familiarity
+        )
+        
+        # Build intent for device controller
+        intent = {
+            "device": request.device_id,
+            "action": request.action,
+            "parameters": request.parameters
+        }
+        
         # Execute device control
-        result = planner.control_hardware(
-            device=request.device_id,
-            action=request.action,
-            parameters=request.parameters
+        result = await ai_system.device_controller.process_device_intent(
+            intent=intent,
+            context=context
         )
         
         # Get updated device state
@@ -1168,7 +1198,7 @@ async def control_device(request: DeviceControlRequest):
         device_state = device.current_state if device else None
         
         return DeviceControlResponse(
-            success=result["success"],
+            success=result.get("success", False),
             message=result.get("message"),
             error=result.get("error"),
             device_state=device_state,
@@ -1266,7 +1296,6 @@ async def cleanup_expired_conversations():
     """Clean up expired conversations"""
     try:
         cleaned_count = db_service.cleanup_expired_conversations()
-        planner.cleanup_expired_conversations()
         
         return {
             "success": True,
@@ -1281,11 +1310,14 @@ async def get_admin_status():
     """Get admin status information"""
     try:
         system_stats = db_service.get_system_statistics()
-        active_conversations = len(planner.active_conversations)
+        active_conversations = system_stats.get("active_conversations", 0)
         
         return {
             "system_statistics": system_stats,
-            "active_conversations_in_memory": active_conversations,
+            "active_conversations": active_conversations,
+            "workflow": "LangGraph with optimized response generation",
+            "optimized": True,
+            "api_calls_per_request": 1,
             "config": {
                 "conversation_timeout_minutes": config.system.conversation_timeout_minutes,
                 "max_active_conversations": config.system.max_active_conversations,
@@ -1329,12 +1361,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             conversation_id = data.get("conversation_id")
             
             if message:
-                # Process message
-                response, conv_id = await planner.process_request(
+                # Process message using LangGraph
+                result = await ai_system.process_message(
                     user_input=message,
                     user_id=user_id,
-                    conversation_id=conversation_id
+                    session_id=conversation_id
                 )
+                
+                # Extract response
+                if isinstance(result, dict):
+                    response = result.get("response", result.get("final_response", "No response"))
+                    conv_id = result.get("session_id", conversation_id)
+                else:
+                    response = str(result)
+                    conv_id = conversation_id
                 
                 # Send response back
                 await websocket.send_json({
@@ -1358,10 +1398,17 @@ async def internal_error_handler(request, exc):
 
 # Run server
 if __name__ == "__main__":
+    # Use configured API port (default 10030)
+    try:
+        from ..utils.config import load_config
+        _cfg = load_config()
+        _port = getattr(_cfg.system, 'api_port', 10030)
+    except Exception:
+        _port = 10030
     uvicorn.run(
         "api:app",
         host="0.0.0.0",
-        port=8000,
+        port=_port,
         reload=True,
         log_level="info"
     )

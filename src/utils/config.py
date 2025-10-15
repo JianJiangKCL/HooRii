@@ -1,9 +1,10 @@
 """
 Configuration management for the Smart Home AI Assistant
 """
+import json
 import os
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -36,10 +37,26 @@ class AnthropicConfig:
     timeout: int = 60
 
 @dataclass
+class GeminiConfig:
+    """Google Gemini API configuration"""
+    api_key: str
+    model: str = "gemini-2.5-flash"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta/"
+    max_tokens: int = 100000
+    timeout: int = 60
+
+@dataclass
+class LLMConfig:
+    """General LLM provider configuration"""
+    provider: str = "gemini"  # Options: anthropic, gemini
+    enabled: bool = True
+
+@dataclass
 class SystemConfig:
     """System-wide configuration"""
     debug: bool = False
     log_level: str = "INFO"
+    api_port: int = 10030
     conversation_timeout_minutes: int = 30
     max_active_conversations: int = 1000
     cleanup_interval_minutes: int = 10
@@ -51,6 +68,11 @@ class SystemConfig:
     max_history_storage: int = 100   # Maximum turns to store in database (unlimited if -1)
     conversation_context_window: int = 8000  # Token limit for conversation context
 
+    # Temporary audio upload
+    temp_upload_enabled: bool = True
+    temp_upload_host: str = "https://catbox.moe"
+    public_base_url: Optional[str] = None
+
 @dataclass
 class VectorSearchConfig:
     """Vector search configuration for user memories"""
@@ -60,12 +82,37 @@ class VectorSearchConfig:
     dimension: int = 384
 
 @dataclass
-class AgoraConfig:
-    """Agora (声网) TTS configuration"""
-    app_key: str
-    app_secret: str
+class OpenAITTSConfig:
+    """OpenAI Text-to-Speech configuration"""
+    api_key: str
+    model: str = "gpt-4o-mini-tts"
+    default_voice: str = "alloy"
+    audio_format: str = "mp3"
+    base_url: str = "https://api.openai.com"
     enabled: bool = True
-    project_id: str = "default"
+
+
+@dataclass
+class ElevenLabsTTSConfig:
+    """ElevenLabs Text-to-Speech configuration"""
+    api_key: str
+    voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default to Rachel's public voice ID
+    model: str = "eleven_multilingual_v2"
+    output_format: str = "mp3_44100_128"
+    voice_settings: dict = field(default_factory=dict)
+    style_preset: Optional[str] = None
+    optimize_streaming_latency: Optional[int] = None
+    base_url: str = "https://api.elevenlabs.io"
+    enabled: bool = True
+
+
+@dataclass
+class TTSConfig:
+    """General text-to-speech provider configuration"""
+    provider: str = "openai"
+    enabled: bool = True
+    default_voice: Optional[str] = None
+    audio_format: str = "mp3"
 
 class Config:
     """Main configuration class"""
@@ -73,10 +120,14 @@ class Config:
     def __init__(self):
         self.database = self._load_database_config()
         self.langfuse = self._load_langfuse_config()
+        self.llm = self._load_llm_config()
         self.anthropic = self._load_anthropic_config()
+        self.gemini = self._load_gemini_config()
         self.system = self._load_system_config()
         self.vector_search = self._load_vector_search_config()
-        self.agora = self._load_agora_config()
+        self.tts = self._load_tts_config()
+        self.openai_tts = self._load_openai_tts_config()
+        self.elevenlabs_tts = self._load_elevenlabs_tts_config()
     
     def _load_database_config(self) -> DatabaseConfig:
         """Load database configuration from environment variables"""
@@ -124,74 +175,142 @@ class Config:
             enabled=True
         )
     
+    def _load_llm_config(self) -> LLMConfig:
+        """Centralized LLM provider configuration (code-controlled)"""
+        return LLMConfig(
+            provider="gemini",
+            enabled=True
+        )
+    
     def _load_anthropic_config(self) -> AnthropicConfig:
-        """Load Anthropic configuration from environment variables"""
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        
+        """Anthropic configuration: API key may come from env; system settings are code-controlled."""
+        api_key = os.getenv("ANTHROPIC_API_KEY") or ""
         return AnthropicConfig(
             api_key=api_key,
-            model=os.getenv("ANTHROPIC_MODEL", "claude-3-sonnet-20240229"),
-            max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "1000")),
-            timeout=int(os.getenv("ANTHROPIC_TIMEOUT", "60"))
+            model="claude-3-sonnet-20240229",
+            max_tokens=1000,
+            timeout=60
+        )
+    
+    def _load_gemini_config(self) -> GeminiConfig:
+        """Gemini configuration: API key may come from env; system settings are code-controlled."""
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        return GeminiConfig(
+            api_key=api_key,
+            model="gemini-2.5-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta/",
+            max_tokens=10000,
+            timeout=60
         )
     
     def _load_system_config(self) -> SystemConfig:
-        """Load system configuration from environment variables"""
-        return SystemConfig(
-            debug=os.getenv("DEBUG", "false").lower() == "true",
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
-            conversation_timeout_minutes=int(os.getenv("CONVERSATION_TIMEOUT_MINUTES", "30")),
-            max_active_conversations=int(os.getenv("MAX_ACTIVE_CONVERSATIONS", "1000")),
-            cleanup_interval_minutes=int(os.getenv("CLEANUP_INTERVAL_MINUTES", "10")),
-            default_familiarity_score=int(os.getenv("DEFAULT_FAMILIARITY_SCORE", "25")),
-            min_familiarity_for_hardware=int(os.getenv("MIN_FAMILIARITY_FOR_HARDWARE", "40")),
-            
-            # Conversation context configuration
-            max_conversation_turns=int(os.getenv("MAX_CONVERSATION_TURNS", "20")),
-            max_history_storage=int(os.getenv("MAX_HISTORY_STORAGE", "100")),
-            conversation_context_window=int(os.getenv("CONVERSATION_CONTEXT_WINDOW", "8000"))
-        )
+        """Centralized system configuration (code-controlled, no .env overrides)."""
+        return SystemConfig()
     
     def _load_vector_search_config(self) -> VectorSearchConfig:
-        """Load vector search configuration from environment variables"""
-        return VectorSearchConfig(
-            enabled=os.getenv("VECTOR_SEARCH_ENABLED", "false").lower() == "true",
-            provider=os.getenv("VECTOR_SEARCH_PROVIDER", "sentence_transformers"),
-            model_name=os.getenv("VECTOR_SEARCH_MODEL", "all-MiniLM-L6-v2"),
-            dimension=int(os.getenv("VECTOR_SEARCH_DIMENSION", "384"))
-        )
+        """Centralized vector search configuration (code-controlled)."""
+        return VectorSearchConfig()
 
-    def _load_agora_config(self) -> AgoraConfig:
-        """Load Agora TTS configuration from environment variables"""
-        app_key = os.getenv("AGORA_APP_KEY")
-        app_secret = os.getenv("AGORA_APP_SECRET")
+    def _load_tts_config(self) -> TTSConfig:
+        """Centralized TTS configuration (code-controlled)."""
+        return TTSConfig()
 
-        if not app_key or not app_secret:
-            return AgoraConfig(
-                app_key="",
-                app_secret="",
+    def _load_openai_tts_config(self) -> OpenAITTSConfig:
+        """Load OpenAI TTS configuration from environment variables"""
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GPT_TTS_API_KEY")
+
+        if not api_key:
+            return OpenAITTSConfig(
+                api_key="",
                 enabled=False
             )
 
-        project_id = os.getenv("AGORA_PROJECT_ID") or app_key
+        model = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+        voice = os.getenv("OPENAI_TTS_VOICE", "alloy")
+        audio_format = os.getenv("OPENAI_TTS_FORMAT", "mp3")
+        base_url = os.getenv("OPENAI_API_BASE", "https://api.openai.com").rstrip("/") or "https://api.openai.com"
 
-        return AgoraConfig(
-            app_key=app_key,
-            app_secret=app_secret,
-            enabled=os.getenv("AGORA_TTS_ENABLED", "true").lower() == "true",
-            project_id=project_id
+        return OpenAITTSConfig(
+            api_key=api_key,
+            model=model,
+            default_voice=voice,
+            audio_format=audio_format,
+            base_url=base_url,
+            enabled=os.getenv("OPENAI_TTS_ENABLED", "true").lower() == "true"
+        )
+
+    def _load_elevenlabs_tts_config(self) -> ElevenLabsTTSConfig:
+        """Load ElevenLabs TTS configuration from environment variables"""
+        api_key = os.getenv("ELEVENLABS_API_KEY")
+
+        if not api_key:
+            return ElevenLabsTTSConfig(
+                api_key="",
+                enabled=False
+            )
+
+        # Try to load from config file first
+        config_file_path = Path("config/elevenlabs_config.json")
+        if config_file_path.exists():
+            try:
+                import json
+                with open(config_file_path, 'r') as f:
+                    config_data = json.load(f)
+                    voice_id = config_data.get("voice_id", os.getenv("ELEVENLABS_VOICE_ID", "rWArYo7a2NWuBYf5BE4V"))
+                    model = config_data.get("model", os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"))
+                    print(f"✓ Loaded ElevenLabs config from config/elevenlabs_config.json")
+            except Exception as e:
+                print(f"⚠️  Failed to load ElevenLabs config file: {e}, using environment variables")
+                voice_id = os.getenv("ELEVENLABS_VOICE_ID", "rWArYo7a2NWuBYf5BE4V")
+                model = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+        else:
+            voice_id = os.getenv("ELEVENLABS_VOICE_ID", "rWArYo7a2NWuBYf5BE4V")
+            model = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+        output_format = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
+        base_url = os.getenv("ELEVENLABS_API_BASE", "https://api.elevenlabs.io").rstrip("/") or "https://api.elevenlabs.io"
+
+        voice_settings_payload = os.getenv("ELEVENLABS_VOICE_SETTINGS")
+        voice_settings = {}
+        if voice_settings_payload:
+            try:
+                voice_settings = json.loads(voice_settings_payload)
+            except json.JSONDecodeError:
+                print("⚠️ Warning: ELEVENLABS_VOICE_SETTINGS is not valid JSON. Ignoring value.")
+
+        style_preset = os.getenv("ELEVENLABS_STYLE_PRESET")
+        optimize_latency_env = os.getenv("ELEVENLABS_OPTIMIZE_STREAMING_LATENCY")
+        optimize_latency = None
+        if optimize_latency_env is not None and optimize_latency_env.strip():
+            try:
+                optimize_latency = int(optimize_latency_env)
+            except ValueError:
+                print("⚠️ Warning: ELEVENLABS_OPTIMIZE_STREAMING_LATENCY must be an integer. Ignoring value.")
+
+        return ElevenLabsTTSConfig(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model,
+            output_format=output_format,
+            voice_settings=voice_settings,
+            style_preset=style_preset,
+            optimize_streaming_latency=optimize_latency,
+            base_url=base_url,
+            enabled=os.getenv("ELEVENLABS_TTS_ENABLED", "true").lower() == "true"
         )
     
     def validate(self) -> bool:
         """Validate configuration"""
         errors = []
         
-        # Check required configurations
-        if not self.anthropic.api_key:
-            errors.append("ANTHROPIC_API_KEY is required")
+        # Check required configurations based on LLM provider
+        if self.llm.provider == "anthropic":
+            if not self.anthropic.api_key:
+                errors.append("ANTHROPIC_API_KEY is required when using Anthropic provider")
+        elif self.llm.provider == "gemini":
+            if not self.gemini.api_key:
+                errors.append("GEMINI_API_KEY is required when using Gemini provider")
+        else:
+            errors.append(f"Unsupported LLM provider: {self.llm.provider}")
         
         # Database URL validation
         if not self.database.url:
@@ -209,10 +328,21 @@ class Config:
         print("🔧 Configuration:")
         print(f"  Database: {self.database.url.split('://', 1)[0]}://***")
         print(f"  Langfuse: {'✅ Enabled' if self.langfuse.enabled else '❌ Disabled'}")
-        print(f"  Anthropic Model: {self.anthropic.model}")
+        print(f"  LLM Provider: {self.llm.provider}")
+        if self.llm.provider == "anthropic":
+            print(f"    Anthropic Model: {self.anthropic.model}")
+        elif self.llm.provider == "gemini":
+            print(f"    Gemini Model: {self.gemini.model}")
         print(f"  Debug Mode: {self.system.debug}")
         print(f"  Vector Search: {'✅ Enabled' if self.vector_search.enabled else '❌ Disabled'}")
-        print(f"  Agora TTS: {'✅ Enabled' if self.agora.enabled else '❌ Disabled'}")
+        print(
+            f"  TTS Provider: {self.tts.provider} "
+            f"({'✅ Enabled' if self.tts.enabled else '❌ Disabled'})"
+        )
+        print(
+            f"    OpenAI: {'✅' if self.openai_tts.enabled else '❌'} | "
+            f"ElevenLabs: {'✅' if self.elevenlabs_tts.enabled else '❌'}"
+        )
 
 def load_config() -> Config:
     """Load and validate configuration"""
@@ -226,56 +356,27 @@ def load_config() -> Config:
 # Environment file template
 def create_env_template():
     """Create a .env template file"""
-    template = """# Smart Home AI Assistant Configuration
+    template = """# Smart Home AI Assistant - Secrets Template Only
 
-# Anthropic Claude API
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-ANTHROPIC_MODEL=claude-3-sonnet-20240229
-ANTHROPIC_MAX_TOKENS=1000
+# LLM API Keys (secrets only)
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
 
-# Langfuse Observability (Optional but recommended)
-LANGFUSE_SECRET_KEY=your_langfuse_secret_key
-LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
+# Langfuse Observability (optional)
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
 
-# Database Configuration
-# Option 1: SQLite (Development)
-DATABASE_URL=sqlite:///./hoorii.db
+# Database (optional - use env only if not using default SQLite)
+DATABASE_URL=
 
-# Option 2: PostgreSQL (Production)
-# DATABASE_URL=postgresql://username:password@localhost:5432/hoorii
-# DB_HOST=localhost
-# DB_PORT=5432
-# DB_NAME=hoorii
-# DB_USER=your_db_user
-# DB_PASSWORD=your_db_password
-# DB_ECHO=false
+# OpenAI TTS (optional secret)
+OPENAI_API_KEY=
+OPENAI_TTS_ENABLED=true
 
-# System Settings
-DEBUG=false
-LOG_LEVEL=INFO
-CONVERSATION_TIMEOUT_MINUTES=30
-MAX_ACTIVE_CONVERSATIONS=1000
-CLEANUP_INTERVAL_MINUTES=10
-DEFAULT_FAMILIARITY_SCORE=25
-MIN_FAMILIARITY_FOR_HARDWARE=40
-
-# Conversation Context Settings
-MAX_CONVERSATION_TURNS=20         # Maximum turns to keep in LLM context
-MAX_HISTORY_STORAGE=100          # Maximum turns to store in database (-1 for unlimited)
-CONVERSATION_CONTEXT_WINDOW=8000 # Token limit for conversation context
-
-# Vector Search (Future feature)
-VECTOR_SEARCH_ENABLED=false
-VECTOR_SEARCH_PROVIDER=sentence_transformers
-VECTOR_SEARCH_MODEL=all-MiniLM-L6-v2
-VECTOR_SEARCH_DIMENSION=384
-
-# Agora (声网) TTS API
-AGORA_APP_KEY=your_agora_app_key
-AGORA_APP_SECRET=your_agora_app_secret
-AGORA_TTS_ENABLED=true
-AGORA_PROJECT_ID=default
+# ElevenLabs TTS (optional secret)
+ELEVENLABS_API_KEY=
+ELEVENLABS_TTS_ENABLED=true
 """
     
     env_file = Path(".env.template")

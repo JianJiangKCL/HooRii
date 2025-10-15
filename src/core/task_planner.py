@@ -8,7 +8,6 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-import anthropic
 
 try:
     from langfuse import observe
@@ -21,6 +20,7 @@ except ImportError:
         return decorator
 
 from ..utils.config import Config
+from ..utils.llm_client import create_llm_client
 from .context_manager import SystemContext
 
 
@@ -30,11 +30,7 @@ class TaskPlanner:
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.claude_client = anthropic.Anthropic(
-            api_key=config.anthropic.api_key,
-            max_retries=2,
-            timeout=20.0
-        )
+        self.llm_client = create_llm_client(config)
 
         # Available tools registry
         self.available_tools = {
@@ -49,7 +45,7 @@ class TaskPlanner:
                 "returns": "device_control_result"
             },
             "agora_tts": {
-                "description": "将文本转换为语音输出",
+                "description": "将文本转换为语音输出 (OpenAI GPT-4o-mini-tts)",
                 "parameters": ["text", "voice"],
                 "returns": "audio_data"
             },
@@ -132,20 +128,15 @@ class TaskPlanner:
 """
 
         try:
-            response = await asyncio.to_thread(
-                self.claude_client.messages.create,
-                model=self.config.anthropic.model,
+            system_prompt = "你是智能任务规划系统，负责分析用户需求并制定工具调用计划。"
+            messages = [{"role": "user", "content": planning_prompt}]
+            
+            response_text = await self.llm_client.generate(
+                system_prompt=system_prompt,
+                messages=messages,
                 max_tokens=500,
-                temperature=0.2,
-                system=[{
-                    "type": "text",
-                    "text": "你是智能任务规划系统，负责分析用户需求并制定工具调用计划。",
-                    "cache_control": {"type": "ephemeral"}
-                }],
-                messages=[{"role": "user", "content": planning_prompt}]
+                temperature=0.2
             )
-
-            response_text = response.content[0].text.strip()
 
             # 解析JSON计划
             try:

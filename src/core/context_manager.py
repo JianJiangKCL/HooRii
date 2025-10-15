@@ -206,6 +206,13 @@ class ContextManager:
         """Update context fields"""
         for key, value in kwargs.items():
             if hasattr(self.context, key):
+                # Normalize timestamp back to datetime when coming from serialized dict
+                if key == "timestamp" and isinstance(value, str):
+                    try:
+                        from datetime import datetime
+                        value = datetime.fromisoformat(value)
+                    except Exception:
+                        pass
                 setattr(self.context, key, value)
                 
     def save_context(self, filepath: str):
